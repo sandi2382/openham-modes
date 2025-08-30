@@ -1,0 +1,25 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+
+# Node
+node_modules/
+
+# Tauri / build
+dist/
+.build/
+.release/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
