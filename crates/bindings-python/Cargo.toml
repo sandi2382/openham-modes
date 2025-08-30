@@ -1,0 +1,26 @@
+[package]
+name = "openham-bindings-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Python bindings for OpenHam digital modes"
+
+[lib]
+name = "openham_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+openham-core = { path = "../core" }
+openham-frame = { path = "../frame" }
+openham-codecs = { path = "../codecs" }
+openham-modem = { path = "../modem" }
+
+pyo3 = { workspace = true, optional = true }
+serde.workspace = true
+anyhow.workspace = true
+
+[features]
+default = ["python-bindings"]
+python-bindings = ["dep:pyo3"]
