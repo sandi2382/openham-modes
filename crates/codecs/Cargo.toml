@@ -1,0 +1,29 @@
+[package]
+name = "openham-codecs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Text and voice codecs for OpenHam digital modes"
+
+[dependencies]
+openham-core = { path = "../core" }
+openham-frame = { path = "../frame" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Text compression (non-encryption)
+# Voice codecs will be added as needed
+
+[dev-dependencies]
+quickcheck.workspace = true
+quickcheck_macros.workspace = true
+
+[features]
+default = ["std", "text-codec"]
+std = []
+text-codec = []
+voice-codec = []
