@@ -1,0 +1,29 @@
+[package]
+name = "openham-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Core DSP primitives and signal processing for OpenHam digital modes"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# DSP dependencies
+rustfft.workspace = true
+realfft.workspace = true
+dasp.workspace = true
+
+# Audio I/O
+hound.workspace = true
+
+[dev-dependencies]
+quickcheck.workspace = true
+quickcheck_macros.workspace = true
+
+[features]
+default = ["std"]
+std = []
