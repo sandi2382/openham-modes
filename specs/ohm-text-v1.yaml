@@ -1,0 +1,14 @@
+---
+mode_id: "ohm.text.v1"
+version: "1.0.0"
+name: "OpenHam Text Mode v1"
+description: "Low-bitrate, robust text transmission mode for amateur radio"
+category: "text"
+status: "draft"
+created: "2025-08-29"
+updated: "2025-08-29"
+authors:
+  - "OpenHam Contributors"
+license: "MIT"
+spec_url: "https://github.com/sandi2382/openham-modes/blob/master/specs/ohm-text-v1.md"
+---
