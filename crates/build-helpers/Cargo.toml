@@ -1,0 +1,18 @@
+[package]
+name = "openham-build-helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Build helpers and packaging utilities for OpenHam digital modes"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+chrono = "0.4"
+
+[features]
+default = ["std"]
+std = []
