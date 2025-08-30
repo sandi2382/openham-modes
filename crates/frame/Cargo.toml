@@ -1,0 +1,25 @@
+[package]
+name = "openham-frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Framing, FEC, and error correction for OpenHam digital modes"
+
+[dependencies]
+openham-core = { path = "../core" }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Error correction
+# Note: Add specific FEC libraries as needed (Reed-Solomon, convolutional codes, etc.)
+
+[dev-dependencies]
+quickcheck.workspace = true
+quickcheck_macros.workspace = true
+
+[features]
+default = ["std"]
+std = []
