@@ -2,6 +2,10 @@
 
 This document describes recommended practices for identifying experimental transmissions using OpenHam digital modes.
 
+## Disclaimer
+
+**THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.** Users are solely responsible for ensuring compliance with local amateur radio regulations, licensing requirements, and band plans. Use at your own risk.
+
 ## Legal Requirements
 
 Before transmitting with experimental digital modes:
@@ -36,8 +40,8 @@ For uncommon modes, consider adding:
 ## Example Complete Preamble
 
 ```
-[CW] DE W1AW W1AW K
-[VOICE] "This is W1AW conducting experimental transmissions using 
+[CW] DE S56SPZ S56SPZ K
+[VOICE] "This is S56SPZ conducting experimental transmissions using 
 OpenHam digital modes, specification published at 
 github.com/sandi2382/openham-modes. Now transmitting 
 OpenHam Text Mode version 1.0"

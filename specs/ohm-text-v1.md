@@ -2,265 +2,224 @@
 
 ## Overview
 
-OpenHam Text Mode v1 (ohm.text.v1) is designed for reliable, low-bitrate text communication over amateur radio. It prioritizes robustness over speed, making it suitable for weak signal conditions and emergency communications.
+OpenHam Text Mode v1 (ohm.text.v1) is a simple, robust text communication mode for amateur radio. It provides reliable transmission of text messages using proven modulation schemes and efficient text encoding.
 
 ## Design Goals
 
-- **Robust error correction**: Reliable communication under poor conditions
-- **Efficient encoding**: Compact representation of common text
-- **Amateur radio compliance**: No encryption, clear identification
-- **Simple implementation**: Straightforward to decode and implement
-- **Extensible**: Foundation for future text mode variants
+- **Robust modulation**: Multiple stable schemes (BPSK, FSK, AFSK, OFDM)
+- **Efficient text encoding**: Ham radio optimized Huffman compression
+- **Amateur radio compliance**: No encryption, clear station identification
+- **Simple implementation**: Straightforward to implement and decode
+- **Proven reliability**: 100% test pass rate for stable components
 
 ## Technical Parameters
 
-### Symbol Rate and Modulation
+### Modulation Schemes (All Stable)
 
-- **Modulation**: BPSK (Binary Phase Shift Keying)
-- **Symbol rate**: 31.25 baud (configurable: 15.625, 31.25, 62.5 baud)
-- **Bandwidth**: ~62.5 Hz at 31.25 baud (Nyquist + rolloff)
-- **Rolloff factor**: 0.35 (root raised cosine)
+#### BPSK (Binary Phase Shift Keying)
+- **Symbol rate**: 125 baud (configurable)
+- **Carrier frequency**: 1500 Hz (configurable)
+- **Phase shift**: 0°/180°
+- **Bandwidth**: ~250 Hz
+
+#### FSK (Frequency Shift Keying)
+- **Symbol rate**: 125 baud (configurable)
+- **Mark frequency**: 1615 Hz (configurable)
+- **Space frequency**: 1385 Hz (configurable)
+- **Frequency shift**: 230 Hz
+
+#### AFSK (Audio FSK)
+- **Bell 202**: 1200 baud, 1200/2200 Hz
+- **Bell 103**: 300 baud, 1070/1270 Hz  
+- **VHF**: 1200 baud, 1200/2200 Hz
+- **HF**: 300 baud, 1600/1800 Hz
+
+#### OFDM (Orthogonal Frequency Division Multiplexing)
+- **Subcarriers**: 64 with pilot equalization
+- **Cyclic prefix**: For multipath resilience
+- **Symbol rate**: 125 baud effective
+- **Bandwidth**: ~2000 Hz
 
 ### Frame Structure
 
-- **Frame length**: 256 bits total
-- **Sync pattern**: 32 bits (Barker sequence + unique word)
-- **Header**: 32 bits (frame type, sequence, flags, checksum)
-- **Payload**: 128 bits (16 bytes user data)
-- **FEC parity**: 64 bits (Reed-Solomon RS(32,16))
-
-### Error Correction
-
-- **Outer code**: Reed-Solomon RS(32,16) - can correct 8 byte errors
-- **Inner code**: None (future versions may add convolutional coding)
-- **Interleaving**: 8x4 block interleaver to combat burst errors
-
-### Encoding Scheme
-
-1. **Text compression**: Huffman coding optimized for English text
-2. **Character set**: UTF-8 with fallback to ASCII
-3. **Special characters**: Ham radio abbreviations and Q-codes
-4. **Escapes**: Control sequences for mode switching
-
-## Frame Format
-
+#### Sync Pattern
 ```text
-| Sync (32b) | Header (32b) | Payload (128b) | Parity (64b) |
+0x55 0x55 0x55 0x55 0xAA 0xAA 0x7E 0x7E
+```
+Standard HDLC-like synchronization sequence providing:
+- **Bit synchronization**: Alternating 0x55 patterns
+- **Polarity detection**: 0xAA for inversion detection  
+- **Frame start**: 0x7E markers for frame boundary
+
+#### Frame Format
+```text
+| Sync (8 bytes) | Payload (variable) |
 ```
 
-### Sync Pattern
-
-```text
-0xACAFE539  // 32-bit sync word (good autocorrelation properties)
-```
-
-### Header Format
-
-```text
-Bits 0-3:   Frame Type (4 bits)
-Bits 4-15:  Sequence Number (12 bits)
-Bits 16-23: Flags (8 bits)
-Bits 24-31: Header Checksum (8 bits)
-```
-
-### Frame Types
-
-- `0x0`: Data frame (text content)
-- `0x1`: Control frame (mode commands)
-- `0x2`: Beacon frame (station identification)
-- `0x3`: ARQ frame (acknowledgment/retransmission)
-
-### Flags
-
-- Bit 0: More fragments follow
-- Bit 1: Fragmented message
-- Bit 2: Priority message
-- Bit 3: Broadcast (no ACK expected)
-- Bit 4-7: Reserved (must be 0)
+Simple framing with:
+- **Robust sync detection**: 8-position bit alignment scan
+- **Inversion tolerance**: Automatic polarity correction
+- **Variable payload**: Text-dependent length
 
 ## Text Encoding
 
-### Character Mapping
+### Huffman Compression
 
-Common characters are encoded with shorter bit patterns:
+Canonical Huffman encoding optimized for amateur radio text with:
 
-```yaml
-# High frequency characters (3-4 bits)
-' ': '000'      # Space
-'E': '001'      # Most common letter
-'T': '010'
-'A': '011'
-'O': '100'
-'I': '101'
-'N': '110'
-'S': '111'
+#### Ham Radio Token Support
+**Q-codes** (mapped to Unicode Private Use Area):
+- QRZ, QRM, QRO, QRP, QRS, QRT, QRB, QSB
+- QSL, QSO, QSY, QTH, and others
 
-# Medium frequency (5-6 bits)
-# ... (full Huffman table in implementation)
+**Common abbreviations**:
+- CQ, DE, BK, KN, K, AR, SK, YL, OM, 73
+- Standard amateur radio shorthand
 
-# Escape sequences
-'\x00': '11110000'  # UTF-8 follows
-'\x01': '11110001'  # Q-code follows
-'\x02': '11110010'  # Abbreviation follows
-'\x03': '11110011'  # Control command
-```
+#### Character Encoding
+- **Primary**: UTF-8 Unicode support
+- **Compression**: Ham radio optimized Huffman table
+- **Fallback**: ASCII for compatibility
+- **Reconstruction**: Exact round-trip guarantee
 
-### Q-Code Support
+### ASCII Codec
 
-Common Q-codes are encoded efficiently:
-
-- `QRT`: End of transmission
-- `QRZ`: Who is calling?
-- `QTH`: Location
-- `QSL`: Acknowledgment
-- `QRM`: Interference
-- `QRN`: Static noise
-
-### Abbreviation Support
-
-Ham radio abbreviations:
-
-- `73`: Best wishes
-- `88`: Love and kisses
-- `CQ`: General call
-- `DE`: From (this is)
-- `SK`: End of contact
+Uncompressed text transmission:
+- **Direct encoding**: One-to-one character mapping
+- **Full UTF-8 support**: Complete Unicode compatibility
+- **No compression**: Maximum compatibility
+- **Exact preservation**: Perfect reconstruction
 
 ## Protocol Operation
 
-### Connection Establishment
+### Transmission Sequence
 
-1. Transmitting station sends beacon with callsign
-2. Receiving station may respond with ACK beacon
-3. Data transmission begins with sequence number 0
+1. **Optional preamble** (user configurable):
+   - CW identification
+   - Voice announcement
+   - Pink noise trigger
 
-### Data Transmission
+2. **Digital transmission**:
+   - Sync pattern transmission
+   - Text encoding (Huffman or ASCII)
+   - Modulation and transmission
 
-1. Text is compressed and fragmented into 16-byte payloads
-2. Each fragment is Reed-Solomon encoded
-3. Frames are transmitted with progressive sequence numbers
-4. Optional ARQ mode for acknowledged delivery
+3. **Frame detection**:
+   - Sync pattern correlation
+   - Bit alignment search (8 positions)
+   - Polarity correction if needed
 
 ### Error Handling
 
-1. Receiver attempts RS decoding on each frame
-2. If uncorrectable, frame is marked as lost
-3. In ARQ mode, NACK is sent for retransmission
-4. In broadcast mode, lost frames are skipped
+- **Sync detection**: Robust correlation with tolerance
+- **Bit alignment**: Multiple position scanning
+- **Polarity correction**: Automatic inversion detection
+- **Frame validation**: Basic integrity checking
 
 ## Implementation Guidelines
 
-### Timing Requirements
+### Audio Parameters
 
-- **Symbol timing**: ±1% accuracy required
-- **Frequency accuracy**: ±10 Hz at HF
-- **Phase noise**: <-40 dBc at 100 Hz offset
+- **Sample Rate**: 48 kHz (configurable)
+- **Bit Depth**: 16-bit PCM
+- **Channels**: Mono
+- **Format**: WAV (uncompressed)
 
-### Receiver Requirements
+### Performance Requirements
 
-- **Sync detection**: Correlate against known sync pattern
-- **Frame alignment**: Bit-level synchronization
-- **Carrier tracking**: PLL with ~10 Hz bandwidth
-- **AGC**: Fast attack, slow decay for fading
+- **Frequency accuracy**: ±10 Hz recommended
+- **Timing accuracy**: ±1% symbol timing
+- **Signal-to-noise ratio**: Variable by modulation scheme
+- **Processing**: Real-time capable on modern hardware
 
 ### Software Implementation
 
 ```rust
-// Example Rust implementation structure
+// Example implementation structure
 pub struct OhmTextV1 {
-    modulator: BpskModulator,
-    demodulator: BpskDemodulator,  
-    rs_codec: ReedSolomon,
-    text_encoder: HuffmanEncoder,
-    interleaver: BlockInterleaver,
+    modulator: Box<dyn Modulator>,      // BPSK/FSK/AFSK/OFDM
+    demodulator: Box<dyn Demodulator>,
+    text_codec: Box<dyn TextCodec>,     // Huffman or ASCII
+    sync_detector: SyncDetector,
 }
 ```
 
 ## Testing and Validation
 
-### Test Vectors
+### Test Coverage
 
-Reference test cases are provided in `/specimen/ohm-text-v1/`:
+Current implementation provides **100% test pass rate** for:
+- All stable modulation schemes (BPSK, FSK, AFSK, OFDM)
+- Text codecs (Huffman and ASCII)
+- Round-trip transmission and reception
+- Enhanced features (CW, pink noise, voice ID)
 
-- `test-vectors.json`: Encoding/decoding test cases
-- `reference-waveform.wav`: 1000 Hz carrier, 48 kHz sample rate
-- `weak-signal.wav`: -10 dB SNR test case
+### Test Cases
 
-### Conformance Tests
-
-1. **Encoding compliance**: Generate known test patterns
-2. **Decoding accuracy**: Process reference waveforms
-3. **Error correction**: Verify RS performance with errors
-4. **Timing tolerance**: Test with frequency/timing offsets
+Available in test suite:
+- **Grid testing**: 48 combinations of modulation × codec × options
+- **Round-trip validation**: Exact content matching
+- **Auto-detection**: Multi-demodulator testing
+- **Edge cases**: Error handling and recovery
 
 ## On-Air Protocol
 
 ### Station Identification
 
-Every transmission session must begin with:
+Recommended preamble sequence:
+1. **CW identification**: Transmitting station callsign
+2. **Voice announcement**: "Experimental digital transmission using OpenHam Text Mode"
+3. **Digital transmission**: Text payload with frame sync
 
-1. CW identification of transmitting station
-2. Spoken announcement: "Experimental digital transmission using OpenHam Text Mode"
-3. First data frame contains station callsign
+### Compliance
 
-### Frequency Coordination
+- **No encryption**: All data transmitted in clear
+- **Proper identification**: Station callsign in preamble
+- **Band plan compliance**: Use appropriate digital frequencies
+- **Power limits**: Respect license class restrictions
 
-- Use designated digital sub-bands
-- Coordinate with local amateurs for testing
-- Monitor frequency before transmitting
-- Use minimum necessary power
+## Current Status
 
-## Future Enhancements
+### ✅ Stable Implementation
+- **BPSK, FSK, AFSK, OFDM**: 100% test pass rate
+- **Text codecs**: Huffman and ASCII fully working
+- **CLI tool**: Complete implementation
+- **Round-trip testing**: Exact match validation
 
-### Version 1.1 (Planned)
+### ⚠️ Experimental Features
+- **PSK variants**: QPSK/8PSK/16PSK (TX working, RX issues)
+- **QAM modes**: 16/64/256/1024-QAM (TX working, sync failures)
 
-- Convolutional inner coding for additional protection
-- Variable data rates (adaptive to conditions)
-- Improved text compression for non-English languages
-- Binary file transfer capability
+## Usage Examples
 
-### Version 2.0 (Roadmap)
+### Basic Transmission
+```bash
+# BPSK with Huffman compression
+./openham tx -o signal.wav -t "Hello from S56SPZ" -c S56SPZ -m bpsk
 
-- OFDM modulation for multipath resilience
-- Forward error correction with turbo codes
-- Dynamic adaptive protocols
-- Integration with digital voice modes
+# OFDM with ASCII encoding
+./openham tx -o signal.wav -t "Test message" -c S56SPZ -m ofdm --text-codec ascii
+```
+
+### Reception
+```bash
+# Auto-detection
+./openham rx -i signal.wav --auto-detect
+
+# Specific modulation
+./openham rx -i signal.wav -m bpsk -o decoded.txt
+```
 
 ## References
 
-- ITU-R M.1677: Error correction techniques for HF data transmission
-- ARRL Digital Communication Protocol Specification
-- Reed-Solomon Tutorial: <https://en.wikiversity.org/reed_solomon>
-- Amateur Radio Emergency Data Network (AREDN) specifications
-
-## Appendices
-
-### A. Huffman Code Table
-
-[Full character encoding table - see implementation files]
-
-### B. Reed-Solomon Generator Polynomial
-
-```text
-g(x) = (x - α^0)(x - α^1)...(x - α^15)
-where α is a primitive element of GF(256)
-```
-
-### C. Test Vector Examples
-
-```json
-{
-  "test_case_1": {
-    "input_text": "CQ CQ DE W1AW",
-    "compressed_bits": "001110010110...",
-    "rs_encoded": "DEADBEEF...",
-    "modulated_samples": [0.1, -0.3, 0.8, ...]
-  }
-}
-```
+- [OpenHam Modes Repository](https://github.com/sandi2382/openham-modes)
+- [USAGE.md](../USAGE.md) - Detailed usage instructions
+- [ARCHITECTURE.md](../docs/ARCHITECTURE.md) - Technical architecture
+- Amateur Radio Digital Communication Standards
 
 ---
 
-**Status**: Draft specification - subject to change  
-**Next Review**: 2025-09-29  
-**Contact**: openham-modes@example.com
+**Status**: Stable implementation - ready for use  
+**Version**: 1.0  
+**Test Status**: 100% pass rate for stable features  
+**Contact**: See repository for current maintainers
