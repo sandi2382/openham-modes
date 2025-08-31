@@ -114,4 +114,4 @@ On-air rules & recommended preamble
 - The project will publish recommended preamble templates and example waveforms in docs/preamble.md.
 
 Contact / maintainer
-- Maintainer: sandi2382 (replace with primary maintainer as needed)
+- Maintainer: sandi2382 (GitHub), email available on GitHub profile.
