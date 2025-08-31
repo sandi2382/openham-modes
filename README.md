@@ -109,16 +109,9 @@ Initial CI (GitHub Actions)
 On-air rules & recommended preamble
 - Before sending with uncommon modes, send:
   1) CW identification (operator callsign) — e.g., "... --- ..." style is not necessary; standard amateur CW ID suffices.
-  2) Spoken identification (short) including operator callsign and URL to spec/repo: "This is S56SPZ conducting experimental transmissions with an open digital mode, specification published at github.com/sandi2382/openham-modes"
+  2) Spoken identification (short) including operator callsign and URL to spec/repo: "This is S56SPZ conducting experimental transmissions with an open digital mode, specification published at github.com/sandi2382/openham-modes or s56spz.com/ohm"
 - Transmissions must obey local regulations (band/timing/power).
 - The project will publish recommended preamble templates and example waveforms in docs/preamble.md.
-
-Next steps (recommended)
-1. Create the repository `sandi2382/openham-modes` (or fork/transfer to an org).
-2. Initialize Cargo workspace and basic crate skeletons.
-3. Add README, LICENSE, CONTRIBUTING, and CODE_OF_CONDUCT.
-4. Add a minimal working CLI example in Rust that encodes a short text payload into PCM (baseband) and writes a .wav file (this serves as a smoke-test example).
-5. Publish the first mode specification (ohm.text.v1) in specs/ with a reference implementation.
 
 Contact / maintainer
 - Maintainer: sandi2382 (replace with primary maintainer as needed)
