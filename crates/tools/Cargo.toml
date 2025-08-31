@@ -23,6 +23,10 @@ path = "src/bin/analyze.rs"
 name = "ohm-synth"
 path = "src/bin/synth.rs"
 
+[[bin]]
+name = "openham"
+path = "src/bin/openham-main.rs"
+
 [dependencies]
 openham-core = { path = "../core" }
 openham-frame = { path = "../frame" }
@@ -39,6 +43,10 @@ tracing-subscriber.workspace = true
 
 # Audio I/O
 hound.workspace = true
+
+# Additional dependencies for main tool
+rand = "0.8"
+base64 = "0.21"
 
 [dev-dependencies]
 quickcheck.workspace = true

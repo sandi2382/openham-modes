@@ -136,7 +136,7 @@ mod tests {
             mode: "ohm.text.v1".to_string(),
             output_file: PathBuf::from("test.wav"),
             input_source: InputSource::Text("Hello".to_string()),
-            callsign: "W1AW".to_string(),
+            callsign: "S56SPZ".to_string(),
             sample_rate: 48000,
             carrier_frequency: 1000.0,
             verbose: 1,

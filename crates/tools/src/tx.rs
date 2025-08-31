@@ -191,7 +191,7 @@ mod tests {
     fn test_transmitter_creation() {
         let mut config = TxConfig::default();
         config.text = Some("Hello World".to_string());
-        config.callsign = "W1AW".to_string();
+        config.callsign = "S56SPZ".to_string();
         
         let _transmitter = Transmitter::new(config).unwrap();
     }
