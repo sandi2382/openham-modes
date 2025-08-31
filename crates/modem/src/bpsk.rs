@@ -34,11 +34,12 @@ impl BpskModulator {
     /// Generate carrier wave
     fn generate_carrier(&mut self, symbol: f64) -> Complex {
         let omega = 2.0 * PI * self.config.carrier_frequency / self.config.sample_rate;
-        let phase = omega * self.sample_counter + symbol * PI;
+        let phase = omega * self.sample_counter;
         
         self.sample_counter += 1.0;
         
-        Complex::new(phase.cos(), phase.sin())
+        // BPSK: multiply carrier by symbol (+1 or -1)
+        Complex::new(symbol * phase.cos(), symbol * phase.sin())
     }
 }
 
@@ -55,14 +56,8 @@ impl Modulator for BpskModulator {
                 
                 // Generate samples for this symbol
                 for _ in 0..samples_per_symbol {
-                    let baseband = Complex::new(symbol, 0.0);
-                    let shaped = self.pulse_shaper.filter(baseband);
                     let modulated = self.generate_carrier(symbol);
-                    
-                    output.push(Complex::new(
-                        shaped.real * modulated.real - shaped.imag * modulated.imag,
-                        shaped.real * modulated.imag + shaped.imag * modulated.real,
-                    ));
+                    output.push(modulated);
                 }
             }
         }
@@ -122,8 +117,10 @@ impl BpskDemodulator {
         
         self.sample_counter += 1.0;
         
+        // Local oscillator for demodulation (note: conjugate for downmixing)
         let lo = Complex::new(phase.cos(), -phase.sin());
         
+        // Mix down to baseband
         Complex::new(
             sample.real * lo.real - sample.imag * lo.imag,
             sample.real * lo.imag + sample.imag * lo.real,
@@ -142,40 +139,115 @@ impl BpskDemodulator {
 impl Demodulator for BpskDemodulator {
     fn demodulate(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
-        
+
         let samples_per_symbol = self.config.samples_per_symbol() as usize;
-        let mut bit_buffer = Vec::new();
-        
-        for (i, &sample) in samples.iter().enumerate() {
-            // Demodulate to baseband
-            let baseband = self.demodulate_to_baseband(sample);
-            let shaped = self.pulse_shaper.filter(baseband);
-            
-            // Check for sync
-            if !self.is_sync {
-                self.detect_sync(shaped);
-                continue;
-            }
-            
-            // Symbol sampling (simplified - should use proper timing recovery)
-            if i % samples_per_symbol == samples_per_symbol / 2 {
-                let bit = if shaped.real > 0.0 { 1 } else { 0 };
-                bit_buffer.push(bit);
-                
-                // Pack bits into bytes
-                if bit_buffer.len() == 8 {
+        if samples_per_symbol == 0 { return Ok(()); }
+
+        // Precompute baseband (real) using a local oscillator based on absolute index
+        let omega = 2.0 * PI * self.config.carrier_frequency / self.config.sample_rate;
+        let mut bb_real: Vec<f64> = Vec::with_capacity(samples.len());
+        for (i, s) in samples.iter().enumerate() {
+            let phase = omega * (i as f64);
+            let c = phase.cos();
+            let si = phase.sin();
+            // Real part after downmix with conjugate LO: I*c + Q*si
+            bb_real.push(s.real * c + s.imag * si);
+        }
+
+        // Try all symbol phase offsets, choose the one with earliest sync;
+        // If none contain sync, choose the strongest (integrated magnitude) candidate.
+        let sync: [u8; 8] = [0x55, 0x55, 0x55, 0x55, 0xAA, 0xAA, 0x7E, 0x7E];
+        let mut candidate_streams: Vec<Vec<u8>> = Vec::new();
+        let mut candidate_strengths: Vec<f64> = Vec::new();
+        let mut best_idx: Option<(usize, usize)> = None; // (offset, position)
+
+        for offset in 0..samples_per_symbol {
+            let mut tmp_bits: Vec<u8> = Vec::new();
+            let mut tmp_bytes: Vec<u8> = Vec::new();
+            let mut strength_acc: f64 = 0.0;
+
+            let mut i = offset;
+            while i + samples_per_symbol <= bb_real.len() {
+                let mut acc = 0f64;
+                let end = i + samples_per_symbol;
+                let mut j = i;
+                while j < end {
+                    acc += bb_real[j];
+                    j += 1;
+                }
+                strength_acc += acc.abs();
+                let bit = if acc > 0.0 { 1u8 } else { 0u8 };
+                tmp_bits.push(bit);
+                if tmp_bits.len() == 8 {
                     let mut byte = 0u8;
-                    for (j, &bit) in bit_buffer.iter().enumerate() {
-                        if bit != 0 {
-                            byte |= 1 << (7 - j);
-                        }
+                    for (k, &b) in tmp_bits.iter().enumerate() {
+                        if b != 0 { byte |= 1 << (7 - k); }
                     }
-                    output.push(byte);
-                    bit_buffer.clear();
+                    tmp_bytes.push(byte);
+                    tmp_bits.clear();
+                }
+                i += samples_per_symbol;
+            }
+            if !tmp_bits.is_empty() {
+                let mut byte = 0u8;
+                for (k, &b) in tmp_bits.iter().enumerate() {
+                    if b != 0 { byte |= 1 << (7 - k); }
+                }
+                tmp_bytes.push(byte);
+            }
+
+            // Skip leading CW tone artifacts: trim leading 0x00/0xFF when searching for sync
+            let mut search_start = 0usize;
+            while search_start < tmp_bytes.len() && (tmp_bytes[search_start] == 0x00 || tmp_bytes[search_start] == 0xFF) {
+                search_start += 1;
+            }
+
+            // Search for sync sequence in tmp_bytes (from trimmed start)
+            let mut found_pos: Option<usize> = None;
+            if tmp_bytes.len() >= sync.len() && search_start <= tmp_bytes.len() - sync.len() {
+                for pos in search_start..=tmp_bytes.len() - sync.len() {
+                    if &tmp_bytes[pos..pos + sync.len()] == sync {
+                        found_pos = Some(pos);
+                        break;
+                    }
                 }
             }
+
+            if let Some(pos) = found_pos {
+                match best_idx {
+                    None => best_idx = Some((offset, pos)),
+                    Some((_, best_pos)) => {
+                        if pos < best_pos { best_idx = Some((offset, pos)); }
+                    }
+                }
+            }
+
+            candidate_strengths.push(strength_acc);
+            candidate_streams.push(tmp_bytes);
         }
-        
+
+        // Output the best candidate if found by sync
+        if let Some((best_offset, _)) = best_idx {
+            output.extend_from_slice(&candidate_streams[best_offset]);
+            self.is_sync = true;
+            return Ok(());
+        }
+
+        // Otherwise, choose the strongest candidate by integrated magnitude
+        if !candidate_streams.is_empty() {
+            let mut best_o = 0usize;
+            let mut best_s = candidate_strengths[0];
+            for o in 1..candidate_strengths.len() {
+                if candidate_strengths[o] > best_s {
+                    best_s = candidate_strengths[o];
+                    best_o = o;
+                }
+            }
+            output.extend_from_slice(&candidate_streams[best_o]);
+            self.is_sync = true;
+            return Ok(());
+        }
+
         Ok(())
     }
     
