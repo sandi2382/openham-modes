@@ -81,8 +81,10 @@ book/
 # Test outputs
 test-results/
 specimen/test-*
+test_outputs/
 
 # Local configuration files
 .env
 .env.local
 config.local.toml
+.github/
