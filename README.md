@@ -6,11 +6,20 @@ Short description
 - OpenHamModes is an open, modular, public project to design, document, and implement non-encrypted experimental digital communications modes for amateur radio (HF/VHF/UHF and audio-over-SDR). The goal is a future-proof, cross-platform codebase for text and digital voice modes (initial), extensible to files, images, and video, while ensuring transmissions remain clearly non-encrypted (morse + spoken identification preamble is recommended).
 
 Legal / policy note
+
 - The project publishes all specifications, source code, and tools openly.
 - Do not use encryption for on-air payloads (project policy).
-- Transmit a clear identification preamble before uncommon / experimental modes transmissions (e.g., CW identification and a short spoken phrase identifying operator and spec location) so traffic cannot be mistaken for encrypted communications. Example preamble: "This is S56SPZ conducting experimental transmissions with an open digital mode, specification published at github.com/sandi2382/openham-modes".
+- Transmit a clear identification preamble before uncommon / experimental modes transmissions (e.g., CW identification and a short spoken phrase identifying operator and spec location) so traffic cannot be mistaken for encrypted communications. Example preamble: "This is S56SPZ conducting experimental transmissions with an open digital mode, specification published at github.com/sandi2382/openham-modes or s56spz.com/ohm".
+
+Disclaimer
+
+- **THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.** The authors and contributors are not responsible for any issues, problems, interference, or damage that may result from the use of this software.
+- Users are solely responsible for ensuring compliance with local amateur radio regulations, licensing requirements, and band plans.
+- This is experimental software intended for research and educational purposes. Use at your own risk.
+- No guarantee is provided regarding signal quality, compatibility, or fitness for any particular purpose.
 
 Goals
+
 - Implement two initial modes: text (low-bitrate, robust) and digital voice.
 - Make the core DSP, framing, and codecs portable, safe, and high-performance.
 - Provide CLI, desktop, and web UIs; provide bindings for scripting and experimentation.
