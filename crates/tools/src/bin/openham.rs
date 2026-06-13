@@ -736,13 +736,8 @@ impl ReceptionCoordinator {
             let psk4_config = PskConfig::qpsk();
             demodulators.push(("PSK4".to_string(), Box::new(PskDemodulator::new(mod_config.clone(), psk4_config)?)));
             
-            // Add AFSK
-            let afsk_config = AfskConfig {
-                mark_frequency: 1200.0,
-                space_frequency: 2200.0,
-                baud_rate: config.symbol_rate,
-                filter_bandwidth: 2400.0,
-            };
+            // Add AFSK (Bell-202: 1200 baud, must match the transmitter)
+            let afsk_config = AfskConfig::bell_202();
             demodulators.push(("AFSK".to_string(), Box::new(AfskDemodulator::new(mod_config.clone(), afsk_config)?)));
             
             // Add OFDM
@@ -756,12 +751,8 @@ impl ReceptionCoordinator {
                 "bpsk" => Box::new(BpskDemodulator::new(mod_config)?),
                 "fsk" => Box::new(FskDemodulator::new(mod_config)?),
                 "afsk" => {
-                    let afsk_config = AfskConfig {
-                mark_frequency: 1200.0,
-                space_frequency: 2200.0,
-                baud_rate: config.symbol_rate,
-                filter_bandwidth: 2400.0,
-            };
+                    // Bell-202: 1200 baud, must match the transmitter.
+                    let afsk_config = AfskConfig::bell_202();
                     Box::new(AfskDemodulator::new(mod_config, afsk_config)?)
                 },
                 "psk4" => {
