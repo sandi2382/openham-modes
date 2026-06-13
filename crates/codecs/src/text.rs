@@ -115,9 +115,17 @@ impl HuffmanCodec {
     }
 
     /// Build canonical Huffman codes from a (char, weight) list
-    fn build_codes_from_frequencies(&mut self, freqs: Vec<(char, u32)>) {
+    fn build_codes_from_frequencies(&mut self, mut freqs: Vec<(char, u32)>) {
         use std::cmp::Ordering;
         use std::collections::BinaryHeap;
+
+        // Deterministic ordering so that independently constructed codecs — e.g.
+        // the transmitter and receiver running in separate processes — build
+        // identical code tables. The token sentinels are added upstream in
+        // HashMap iteration order, which is randomized per process; sorting here
+        // (by weight desc, then char) removes that dependency and makes the
+        // Huffman tie-breaking reproducible.
+        freqs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
         #[derive(Clone)]
         struct Node {
@@ -545,5 +553,20 @@ mod tests {
         let encoded = codec.encode(text).unwrap();
         let decoded = codec.decode(&encoded).unwrap();
         assert_eq!(decoded, text);
+    }
+
+    #[test]
+    fn huffman_roundtrip_across_independent_codecs() {
+        // The transmitter and receiver build their codecs in separate processes.
+        // Two independently constructed codecs must therefore agree on the code
+        // table — including the ham-token sentinels — or tokens decode wrong.
+        let text = "CQ CQ DE S56SPZ K QRZ QRM QTH 73";
+        for _ in 0..32 {
+            let mut enc = HuffmanCodec::new_english();
+            let mut dec = HuffmanCodec::new_english();
+            let bytes = enc.encode(text).unwrap();
+            let decoded = dec.decode(&bytes).unwrap();
+            assert_eq!(decoded, text, "independent codec instances disagree");
+        }
     }
 }
