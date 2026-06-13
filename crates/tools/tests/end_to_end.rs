@@ -146,3 +146,39 @@ fn working_modes_fer_vs_snr() {
         }
     }
 }
+
+/// ACCEPTANCE SPEC for live operation (not yet supported).
+///
+/// On a real radio feed the audio is continuous and a transmission begins at an
+/// arbitrary instant, preceded by silence/noise/other signals. The receiver must
+/// locate the frame within the stream — it cannot assume the frame starts at the
+/// first sample. Today frames carry no preamble/sync word and `Frame::from_bytes`
+/// parses from byte 0, so this fails. This test is the target for a proper
+/// sync-word acquisition layer; un-ignore it once that exists.
+#[test]
+#[ignore = "requires sync-word frame acquisition for live streams (not yet implemented)"]
+fn frame_acquisition_at_arbitrary_offset() {
+    let payload = b"OHM LIVE 99";
+    let sps = 384usize; // 48000 / 125 baud
+    for m in working_modes() {
+        let frame = Frame::new(frame_types::DATA, 3, payload.to_vec(), frame_flags::NONE);
+        let signal = modulate(&m, &frame.to_bytes());
+
+        // Arbitrary (deliberately non-symbol-aligned) lead-in, then the burst,
+        // then trailing dead air — i.e. a slice of a live capture.
+        let lead_in = sps + sps / 3 + 7;
+        let mut stream = vec![Complex::new(0.0, 0.0); lead_in];
+        stream.extend_from_slice(&signal);
+        stream.extend(std::iter::repeat(Complex::new(0.0, 0.0)).take(sps * 2));
+
+        let mut rng = StdRng::seed_from_u64(1);
+        add_awgn_real_snr(&mut stream, 25.0, &mut rng);
+        let stream = through_wav(&stream);
+
+        assert!(
+            decodes_to(&m, &stream, payload),
+            "{} could not acquire a frame at an arbitrary offset in a live stream",
+            m.name
+        );
+    }
+}
