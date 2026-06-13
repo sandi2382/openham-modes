@@ -4,6 +4,7 @@
 //! and interleaving for reliable digital communications.
 
 pub mod frame;
+pub mod framing;
 pub mod fec;
 pub mod interleave;
 pub mod multimedia;
@@ -15,6 +16,7 @@ pub use error::{FrameError, Result};
 pub mod prelude {
     pub use crate::{
         frame::{Frame, FrameBuilder, FrameHeader},
+        framing::{add_preamble_sync, bits_to_bytes, bytes_to_bits, Acquisition, PREAMBLE, SYNC_WORD},
         fec::{FecEncoder, FecDecoder, ReedSolomon, Convolutional},
         interleave::{Interleaver, BlockInterleaver, ConvolutionalInterleaver},
         multimedia::{
