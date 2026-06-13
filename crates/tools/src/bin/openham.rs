@@ -477,9 +477,10 @@ impl TransmissionCoordinator {
         let frames = self.build_frames(&encoded_data)?;
         info!("Created {} frame(s)", frames.len());
         
-        // 4. Modulate each frame
+        // 4. Modulate each frame, wrapped with a preamble + sync word so a live
+        //    receiver can acquire it at an arbitrary point in the audio stream.
         for (i, frame) in frames.iter().enumerate() {
-            let frame_bytes = frame.to_bytes();
+            let frame_bytes = add_preamble_sync(&frame.to_bytes());
             let mut frame_samples = Vec::new();
             
             // Add inter-frame spacing for multiple frames
@@ -788,38 +789,40 @@ impl ReceptionCoordinator {
 
         // Try each demodulator
         for (name, demodulator) in &mut self.demodulators {
-            let mut bits = Vec::new();
-            
-            match demodulator.demodulate(samples, &mut bits) {
-                Ok(()) if !bits.is_empty() => {
-                    debug!("{} demodulator produced {} bits", name, bits.len());
-                    
-                    // Try to decode frame
-                    match Frame::from_bytes(&bits) {
-                        Ok(frame) => {
-                            info!("Decoded {} frame with {} payload bytes", name, frame.payload.len());
-                            
-                            // Decode this frame's payload directly. (Fragment
-                            // reassembly across frames is not yet wired up.)
-                            let text = Self::decode_payload(&frame.payload, frame.header.frame_type, encoding)?;
-                            let quality = demodulator.signal_quality();
+            let mut demod_bytes = Vec::new();
 
-                            decoded_messages.push(DecodedMessage {
-                                modulation: name.clone(),
-                                text,
-                                frame_type: frame.header.frame_type,
-                                sequence: frame.header.sequence,
-                                signal_quality: quality,
-                                timestamp: std::time::SystemTime::now(),
-                            });
-                        },
-                        Err(e) => {
-                            debug!("Frame decode failed for {}: {}", name, e);
-                        }
+            match demodulator.demodulate(samples, &mut demod_bytes) {
+                Ok(()) if !demod_bytes.is_empty() => {
+                    debug!("{} demodulator produced {} bytes", name, demod_bytes.len());
+
+                    // Acquire frames from the demodulated bit stream: correlate
+                    // the sync word at every bit offset, so a transmission that
+                    // started anywhere in the capture is located. (Re-expanding
+                    // the bytes to bits preserves the recovered bit sequence.)
+                    let bit_stream = bytes_to_bits(&demod_bytes);
+                    let frames = Acquisition::new().find_frames(&bit_stream);
+                    debug!("{} acquired {} frame(s)", name, frames.len());
+
+                    for frame in frames {
+                        let text = Self::decode_payload(
+                            &frame.payload,
+                            frame.header.frame_type,
+                            encoding,
+                        )?;
+                        let quality = demodulator.signal_quality();
+
+                        decoded_messages.push(DecodedMessage {
+                            modulation: name.clone(),
+                            text,
+                            frame_type: frame.header.frame_type,
+                            sequence: frame.header.sequence,
+                            signal_quality: quality,
+                            timestamp: std::time::SystemTime::now(),
+                        });
                     }
                 },
                 Ok(()) => {
-                    debug!("{} demodulator produced no bits", name);
+                    debug!("{} demodulator produced no bytes", name);
                 },
                 Err(e) => {
                     debug!("{} demodulator failed: {}", name, e);
