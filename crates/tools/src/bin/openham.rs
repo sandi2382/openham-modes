@@ -180,7 +180,11 @@ pub struct ReceiveConfig {
     /// Modulation scheme to decode (or "auto" for detection)
     #[arg(short, long, default_value = "auto")]
     pub modulation: String,
-    
+
+    /// Text encoding to decode with (must match the transmitter)
+    #[arg(long, default_value = "huffman")]
+    pub encoding: EncodingType,
+
     /// Sample rate in Hz
     #[arg(long, default_value = "48000")]
     pub sample_rate: f64,
@@ -338,7 +342,7 @@ pub enum ModulationType {
 }
 
 /// Supported encoding types
-#[derive(ValueEnum, Clone, Debug, Serialize, Deserialize)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EncodingType {
     Raw,
     Huffman,
@@ -779,7 +783,9 @@ impl ReceptionCoordinator {
         let mut decoded_messages = Vec::new();
         
         info!("Processing {} samples with {} demodulators", samples.len(), self.demodulators.len());
-        
+
+        let encoding = self.config.encoding;
+
         // Try each demodulator
         for (name, demodulator) in &mut self.demodulators {
             let mut bits = Vec::new();
@@ -795,7 +801,7 @@ impl ReceptionCoordinator {
                             
                             // Decode this frame's payload directly. (Fragment
                             // reassembly across frames is not yet wired up.)
-                            let text = Self::decode_payload(&frame.payload, frame.header.frame_type)?;
+                            let text = Self::decode_payload(&frame.payload, frame.header.frame_type, encoding)?;
                             let quality = demodulator.signal_quality();
 
                             decoded_messages.push(DecodedMessage {
@@ -824,8 +830,8 @@ impl ReceptionCoordinator {
         Ok(decoded_messages)
     }
     
-    /// Decode frame payload based on frame type
-    fn decode_payload(data: &[u8], frame_type: u8) -> Result<String> {
+    /// Decode frame payload based on frame type and the configured text encoding.
+    fn decode_payload(data: &[u8], frame_type: u8, encoding: EncodingType) -> Result<String> {
         match frame_type {
             2 => {
                 // Multimedia frame
@@ -858,17 +864,23 @@ impl ReceptionCoordinator {
             }
         }
         
-        // Try Huffman decoding first
-        let mut huffman = HuffmanCodec::new_english();
-        if let Ok(text) = huffman.decode(data) {
-            return Ok(text);
+        // Standard frame: decode with the configured text encoding (it must
+        // match the transmitter). Only Huffman is compressed; the others are
+        // plain UTF-8 text.
+        match encoding {
+            EncodingType::Huffman => {
+                let mut huffman = HuffmanCodec::new_english();
+                if let Ok(text) = huffman.decode(data) {
+                    return Ok(text);
+                }
+            }
+            EncodingType::Raw | EncodingType::Ascii | EncodingType::Utf8 => {
+                if let Ok(text) = String::from_utf8(data.to_vec()) {
+                    return Ok(text);
+                }
+            }
         }
-        
-        // Try UTF-8
-        if let Ok(text) = String::from_utf8(data.to_vec()) {
-            return Ok(text);
-        }
-        
+
         // Fallback to hex representation
         Ok(format!("HEX:{}", data.iter().map(|b| format!("{:02x}", b)).collect::<String>()))
     }
