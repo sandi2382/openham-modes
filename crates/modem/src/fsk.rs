@@ -110,11 +110,13 @@ impl Demodulator for FskDemodulator {
     let sync: [u8; 8] = [0x55, 0x55, 0x55, 0x55, 0xAA, 0xAA, 0x7E, 0x7E];
     let sync_inv: [u8; 8] = [0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x81, 0x81];
         let mut candidate_streams: Vec<Vec<u8>> = Vec::new();
+        let mut candidate_strengths: Vec<f64> = Vec::new();
         let mut best_sync: Option<(usize, usize)> = None; // (offset, pos)
 
         for offset in 0..samples_per_symbol {
             let mut bits_acc: Vec<u8> = Vec::new();
             let mut bytes_acc: Vec<u8> = Vec::new();
+            let mut strength_acc = 0.0f64;
 
             let mut idx = offset;
             while idx + samples_per_symbol <= self.buffer.len() {
@@ -135,6 +137,8 @@ impl Demodulator for FskDemodulator {
                 }
                 let e_mark = mi * mi + mq * mq;
                 let e_space = si * si + sq * sq;
+                // Discrimination margin: peaks when the window aligns with a symbol.
+                strength_acc += (e_mark - e_space).abs();
                 let bit = if e_mark > e_space { 1u8 } else { 0u8 };
                 bits_acc.push(bit);
                 if bits_acc.len() == 8 {
@@ -163,6 +167,7 @@ impl Demodulator for FskDemodulator {
                 match best_sync { None => best_sync = Some((offset, pos)), Some((_, bp)) if pos < bp => best_sync = Some((offset, pos)), _ => {} }
             }
             candidate_streams.push(bytes_acc);
+            candidate_strengths.push(strength_acc);
         }
 
         if let Some((best_o, _)) = best_sync {
@@ -170,8 +175,19 @@ impl Demodulator for FskDemodulator {
             return Ok(());
         }
 
-        // Fallback: choose the longest stream
-        if let Some((best_o, _)) = candidate_streams.iter().enumerate().max_by_key(|(_, v)| v.len()) {
+        // Fallback: no sync found. Every offset yields ~the same byte count, so
+        // picking by length is unreliable (it tie-breaks to a misaligned offset).
+        // Instead choose the offset with the strongest mark/space discrimination,
+        // which peaks at the correct symbol alignment (cf. the BPSK demodulator).
+        if !candidate_strengths.is_empty() {
+            let mut best_o = 0usize;
+            let mut best_s = candidate_strengths[0];
+            for o in 1..candidate_strengths.len() {
+                if candidate_strengths[o] > best_s {
+                    best_s = candidate_strengths[o];
+                    best_o = o;
+                }
+            }
             output.extend_from_slice(&candidate_streams[best_o]);
         }
         Ok(())
@@ -203,5 +219,27 @@ mod tests {
         let config = ModulationConfig::new(48000.0, 1000.0, 1500.0).unwrap();
         let _modulator = FskModulator::new(config.clone()).unwrap();
         let _demodulator = FskDemodulator::new(config).unwrap();
+    }
+
+    fn roundtrip(baud: f64, payload: &[u8]) -> Vec<u8> {
+        let config = ModulationConfig::new(48000.0, baud, 1500.0).unwrap();
+        let mut m = FskModulator::new(config.clone()).unwrap();
+        let mut samples = Vec::new();
+        m.modulate(payload, &mut samples).unwrap();
+        let mut d = FskDemodulator::new(config).unwrap();
+        let mut out = Vec::new();
+        d.demodulate(&samples, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn fsk_raw_roundtrip_clean() {
+        // A clean modulate -> demodulate must reproduce the payload exactly,
+        // across symbol rates. (Regression: the no-sync fallback used to pick a
+        // misaligned offset, yielding ~random bits.)
+        let payload = b"FSK ROUNDTRIP TEST 12345";
+        for baud in [125.0, 250.0, 1200.0] {
+            assert_eq!(roundtrip(baud, payload), payload, "baud {baud}");
+        }
     }
 }
