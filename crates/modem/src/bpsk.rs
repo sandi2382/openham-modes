@@ -268,6 +268,46 @@ impl Demodulator for BpskDemodulator {
     }
 }
 
+impl crate::common::BitDemodulator for BpskDemodulator {
+    fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
+        output.clear();
+        let sps = self.config.samples_per_symbol() as usize;
+        if sps == 0 || samples.len() < sps {
+            return Ok(());
+        }
+
+        // Coherent downmix to baseband (real component), absolute-index LO.
+        let omega = 2.0 * PI * self.config.carrier_frequency / self.config.sample_rate;
+        let mut bb_real: Vec<f64> = Vec::with_capacity(samples.len());
+        for (i, s) in samples.iter().enumerate() {
+            let phase = omega * (i as f64);
+            bb_real.push(s.real * phase.cos() + s.imag * phase.sin());
+        }
+
+        // Choose the symbol-timing offset with the strongest integrated energy
+        // and emit its bit decisions (no framing/sync logic).
+        let mut best_bits: Vec<u8> = Vec::new();
+        let mut best_strength = -1.0f64;
+        for offset in 0..sps {
+            let mut bits = Vec::new();
+            let mut strength = 0.0f64;
+            let mut i = offset;
+            while i + sps <= bb_real.len() {
+                let acc: f64 = bb_real[i..i + sps].iter().sum();
+                strength += acc.abs();
+                bits.push(if acc > 0.0 { 1 } else { 0 });
+                i += sps;
+            }
+            if strength > best_strength {
+                best_strength = strength;
+                best_bits = bits;
+            }
+        }
+        *output = best_bits;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

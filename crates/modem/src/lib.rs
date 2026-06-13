@@ -29,7 +29,7 @@ pub mod prelude {
             FrequencyHoppingModulator, WaterfallModulator,
             MultiToneConfig, ChaosConfig,
         },
-        common::{Modulator, Demodulator, ModulationConfig, SignalQuality},
+        common::{BitDemodulator, Modulator, Demodulator, ModulationConfig, SignalQuality},
         error::{ModemError, Result},
     };
 }

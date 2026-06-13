@@ -208,6 +208,48 @@ impl Demodulator for FskDemodulator {
     }
 }
 
+impl crate::common::BitDemodulator for FskDemodulator {
+    fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
+        output.clear();
+        let sps = self.config.samples_per_symbol() as usize;
+        if sps == 0 || samples.len() < sps {
+            return Ok(());
+        }
+
+        // Choose the symbol-timing offset with the strongest mark/space
+        // discrimination and emit its bit decisions (no framing/sync logic).
+        let mut best_bits: Vec<u8> = Vec::new();
+        let mut best_strength = -1.0f64;
+        for offset in 0..sps {
+            let mut bits = Vec::new();
+            let mut strength = 0.0f64;
+            let mut idx = offset;
+            while idx + sps <= samples.len() {
+                let win = &samples[idx..idx + sps];
+                let (mut mi, mut mq, mut si, mut sq) = (0.0, 0.0, 0.0, 0.0);
+                for (k, s) in win.iter().enumerate() {
+                    let t = k as f64 / self.config.sample_rate;
+                    mi += s.real * (2.0 * PI * self.freq_mark * t).cos();
+                    mq += s.real * -(2.0 * PI * self.freq_mark * t).sin();
+                    si += s.real * (2.0 * PI * self.freq_space * t).cos();
+                    sq += s.real * -(2.0 * PI * self.freq_space * t).sin();
+                }
+                let e_mark = mi * mi + mq * mq;
+                let e_space = si * si + sq * sq;
+                strength += (e_mark - e_space).abs();
+                bits.push(if e_mark > e_space { 1 } else { 0 });
+                idx += sps;
+            }
+            if strength > best_strength {
+                best_strength = strength;
+                best_bits = bits;
+            }
+        }
+        *output = best_bits;
+        Ok(())
+    }
+}
+
 // (no additional helpers)
 
 #[cfg(test)]

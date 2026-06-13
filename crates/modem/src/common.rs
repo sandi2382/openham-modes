@@ -29,9 +29,20 @@ pub trait Demodulator {
     
     /// Get signal quality metrics
     fn signal_quality(&self) -> SignalQuality;
-    
+
     /// Reset demodulator state
     fn reset(&mut self);
+}
+
+/// Demodulate to a continuous bit stream — one bit (0 or 1) per element — at the
+/// receiver's best recovered symbol timing, with NO framing or sync logic.
+///
+/// This is the input to the mode-agnostic frame-acquisition layer
+/// (`openham_frame::framing`): the demodulator recovers symbol timing and emits
+/// every bit it sees; locating frames within that stream is the framing layer's
+/// job. Modes implement this once their bit recovery is reliable.
+pub trait BitDemodulator {
+    fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()>;
 }
 
 /// Signal quality metrics
