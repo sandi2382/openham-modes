@@ -17,6 +17,10 @@ rustfft.workspace = true
 realfft.workspace = true
 dasp.workspace = true
 
+# Noise generation for channel simulation
+rand.workspace = true
+rand_distr.workspace = true
+
 # Audio I/O
 hound.workspace = true
 

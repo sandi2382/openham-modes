@@ -116,9 +116,36 @@ impl Complex {
 
 impl std::ops::Mul<f64> for Complex {
     type Output = Complex;
-    
+
     fn mul(self, rhs: f64) -> Self::Output {
         Complex::new(self.real * rhs, self.imag * rhs)
+    }
+}
+
+impl std::ops::Add for Complex {
+    type Output = Complex;
+
+    fn add(self, rhs: Complex) -> Self::Output {
+        Complex::new(self.real + rhs.real, self.imag + rhs.imag)
+    }
+}
+
+impl std::ops::Sub for Complex {
+    type Output = Complex;
+
+    fn sub(self, rhs: Complex) -> Self::Output {
+        Complex::new(self.real - rhs.real, self.imag - rhs.imag)
+    }
+}
+
+impl std::ops::Mul for Complex {
+    type Output = Complex;
+
+    fn mul(self, rhs: Complex) -> Self::Output {
+        Complex::new(
+            self.real * rhs.real - self.imag * rhs.imag,
+            self.real * rhs.imag + self.imag * rhs.real,
+        )
     }
 }
 

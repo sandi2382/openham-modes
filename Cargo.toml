@@ -40,6 +40,10 @@ dasp = "0.11"  # Digital signal processing
 toml = "0.8"
 yaml-rust = "0.4"
 
+# Randomness / noise generation
+rand = "0.8"
+rand_distr = "0.4"
+
 # Testing
 quickcheck = "1.0"
 quickcheck_macros = "1.0"
