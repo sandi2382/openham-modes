@@ -9,9 +9,10 @@
 use openham_core::buffer::Complex;
 use openham_core::channel::add_awgn_real_snr;
 use openham_frame::frame::{frame_flags, frame_types, Frame};
+use openham_frame::framing::{add_preamble_sync, Acquisition};
 use openham_modem::afsk::{AfskConfig, AfskDemodulator, AfskModulator};
 use openham_modem::bpsk::{BpskDemodulator, BpskModulator};
-use openham_modem::common::{Demodulator, ModulationConfig, Modulator};
+use openham_modem::common::{BitDemodulator, Demodulator, ModulationConfig, Modulator};
 use openham_modem::fsk::{FskDemodulator, FskModulator};
 use openham_modem::ofdm::{OfdmConfig, OfdmDemodulator, OfdmModulator};
 use openham_modem::psk::{PskConfig, PskDemodulator, PskModulator};
@@ -147,38 +148,61 @@ fn working_modes_fer_vs_snr() {
     }
 }
 
-/// ACCEPTANCE SPEC for live operation (not yet supported).
-///
-/// On a real radio feed the audio is continuous and a transmission begins at an
-/// arbitrary instant, preceded by silence/noise/other signals. The receiver must
-/// locate the frame within the stream — it cannot assume the frame starts at the
-/// first sample. Today frames carry no preamble/sync word and `Frame::from_bytes`
-/// parses from byte 0, so this fails. This test is the target for a proper
-/// sync-word acquisition layer; un-ignore it once that exists.
+type MakeBitDemod = Box<dyn Fn() -> Box<dyn BitDemodulator>>;
+
+/// Modes wired into the frame-acquisition layer (those implementing
+/// `BitDemodulator`). Extend as more modes gain reliable bit recovery.
+fn acquisition_modes() -> Vec<(&'static str, MakeMod, MakeBitDemod)> {
+    vec![
+        (
+            "bpsk",
+            Box::new(|| Box::new(BpskModulator::new(cfg()).unwrap()) as Box<dyn Modulator>),
+            Box::new(|| Box::new(BpskDemodulator::new(cfg()).unwrap()) as Box<dyn BitDemodulator>),
+        ),
+        (
+            "fsk",
+            Box::new(|| Box::new(FskModulator::new(cfg()).unwrap()) as Box<dyn Modulator>),
+            Box::new(|| Box::new(FskDemodulator::new(cfg()).unwrap()) as Box<dyn BitDemodulator>),
+        ),
+    ]
+}
+
+/// Live-operation acceptance test: a transmission begins at an arbitrary instant
+/// in a continuous, noisy feed (silence before and after). The receiver must
+/// still locate and decode the frame via preamble + sync-word acquisition — it
+/// does NOT get a buffer that starts exactly at the frame.
 #[test]
-#[ignore = "requires sync-word frame acquisition for live streams (not yet implemented)"]
 fn frame_acquisition_at_arbitrary_offset() {
     let payload = b"OHM LIVE 99";
     let sps = 384usize; // 48000 / 125 baud
-    for m in working_modes() {
+    for (name, make_mod, make_bitdemod) in acquisition_modes() {
         let frame = Frame::new(frame_types::DATA, 3, payload.to_vec(), frame_flags::NONE);
-        let signal = modulate(&m, &frame.to_bytes());
 
-        // Arbitrary (deliberately non-symbol-aligned) lead-in, then the burst,
-        // then trailing dead air — i.e. a slice of a live capture.
+        // Transmit: preamble + sync word + frame, then modulate to audio.
+        let framed = add_preamble_sync(&frame.to_bytes());
+        let mut modu = make_mod();
+        let mut signal = Vec::new();
+        modu.modulate(&framed, &mut signal).unwrap();
+
+        // Build a live-like capture: a deliberately non-symbol-aligned lead-in of
+        // dead air, the burst, then trailing dead air, all under AWGN.
         let lead_in = sps + sps / 3 + 7;
         let mut stream = vec![Complex::new(0.0, 0.0); lead_in];
         stream.extend_from_slice(&signal);
         stream.extend(std::iter::repeat(Complex::new(0.0, 0.0)).take(sps * 2));
-
         let mut rng = StdRng::seed_from_u64(1);
         add_awgn_real_snr(&mut stream, 25.0, &mut rng);
         let stream = through_wav(&stream);
 
+        // Receive: demodulate to a bit stream, then acquire frames from it.
+        let mut bitdemod = make_bitdemod();
+        let mut bits = Vec::new();
+        bitdemod.demodulate_bits(&stream, &mut bits).unwrap();
+        let frames = Acquisition::new().find_frames(&bits);
+
         assert!(
-            decodes_to(&m, &stream, payload),
-            "{} could not acquire a frame at an arbitrary offset in a live stream",
-            m.name
+            frames.iter().any(|f| f.payload == payload),
+            "{name} could not acquire a frame at an arbitrary offset in a live stream",
         );
     }
 }
