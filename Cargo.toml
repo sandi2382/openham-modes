@@ -5,7 +5,7 @@ members = [
   "crates/codecs",
   "crates/modem",
   "crates/tools",
-  "crates/bindings-python",
+  # "crates/bindings-python",  # deferred: pyo3 extension-module needs link config; revisit in the bindings stage
   "crates/build-helpers",
 ]
 resolver = "2"
