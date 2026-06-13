@@ -164,6 +164,17 @@ fn acquisition_modes() -> Vec<(&'static str, MakeMod, MakeBitDemod)> {
             Box::new(|| Box::new(FskModulator::new(cfg()).unwrap()) as Box<dyn Modulator>),
             Box::new(|| Box::new(FskDemodulator::new(cfg()).unwrap()) as Box<dyn BitDemodulator>),
         ),
+        (
+            "afsk",
+            Box::new(|| {
+                Box::new(AfskModulator::new(cfg(), AfskConfig::bell_202()).unwrap())
+                    as Box<dyn Modulator>
+            }),
+            Box::new(|| {
+                Box::new(AfskDemodulator::new(cfg(), AfskConfig::bell_202()).unwrap())
+                    as Box<dyn BitDemodulator>
+            }),
+        ),
     ]
 }
 

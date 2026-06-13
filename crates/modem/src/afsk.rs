@@ -180,15 +180,11 @@ impl Modulator for AfskModulator {
     }
 }
 
-/// AFSK demodulator using dual tone detection
+/// AFSK demodulator using per-symbol mark/space energy detection.
 pub struct AfskDemodulator {
     config: ModulationConfig,
     afsk_config: AfskConfig,
-    mark_correlator: ToneDetector,
-    space_correlator: ToneDetector,
     bit_duration: f64,
-    sample_counter: f64,
-    bit_samples: f64,
     sync_detected: bool,
     signal_quality: SignalQuality,
 }
@@ -197,112 +193,99 @@ impl AfskDemodulator {
     /// Create a new AFSK demodulator
     pub fn new(config: ModulationConfig, afsk_config: AfskConfig) -> Result<Self> {
         let bit_duration = config.sample_rate / afsk_config.baud_rate;
-        
-        let mark_correlator = ToneDetector::new(
-            afsk_config.mark_frequency,
-            config.sample_rate,
-            64, // correlation window
-        )?;
-        
-        let space_correlator = ToneDetector::new(
-            afsk_config.space_frequency,
-            config.sample_rate,
-            64,
-        )?;
-        
         Ok(Self {
             config,
             afsk_config,
-            mark_correlator,
-            space_correlator,
             bit_duration,
-            sample_counter: 0.0,
-            bit_samples: 0.0,
             sync_detected: false,
             signal_quality: SignalQuality::default(),
         })
     }
-    
-    /// Detect bit based on tone correlation
-    fn detect_bit(&mut self, sample: f64) -> Option<u8> {
-        let mark_level = self.mark_correlator.process(sample);
-        let space_level = self.space_correlator.process(sample);
-        
-        self.bit_samples += 1.0;
-        
-        // Sample at middle of bit period
-        if self.bit_samples >= self.bit_duration {
-            self.bit_samples = 0.0;
-            
-            // Update signal quality metrics
-            let total_power = mark_level + space_level;
-            if total_power > 0.0 {
-                let snr = if mark_level > space_level {
-                    20.0 * (mark_level / space_level).log10()
-                } else {
-                    20.0 * (space_level / mark_level).log10()
-                };
-                self.signal_quality.snr_db = snr;
-            }
-            
-            // Determine bit value
-            Some(if mark_level > space_level { 1 } else { 0 })
-        } else {
-            None
+
+    /// Recover the bit stream at the best symbol-timing offset using per-symbol
+    /// mark/space energy detection. Trying every offset lets the receiver lock
+    /// onto a burst that begins anywhere in the stream — required for live audio
+    /// where a transmission does not start at the first sample.
+    fn demod_bits(&self, samples: &[Complex]) -> Vec<u8> {
+        let sps = self.bit_duration as usize;
+        if sps == 0 || samples.len() < sps {
+            return Vec::new();
         }
+        let mark = self.afsk_config.mark_frequency;
+        let space = self.afsk_config.space_frequency;
+        let fs = self.config.sample_rate;
+
+        let mut best_bits: Vec<u8> = Vec::new();
+        let mut best_strength = -1.0f64;
+        for offset in 0..sps {
+            let mut bits = Vec::new();
+            let mut strength = 0.0f64;
+            let mut idx = offset;
+            while idx + sps <= samples.len() {
+                let win = &samples[idx..idx + sps];
+                let (mut mi, mut mq, mut si, mut sq) = (0.0, 0.0, 0.0, 0.0);
+                for (k, s) in win.iter().enumerate() {
+                    let t = k as f64 / fs;
+                    mi += s.real * (2.0 * PI * mark * t).cos();
+                    mq += s.real * -(2.0 * PI * mark * t).sin();
+                    si += s.real * (2.0 * PI * space * t).cos();
+                    sq += s.real * -(2.0 * PI * space * t).sin();
+                }
+                let e_mark = mi * mi + mq * mq;
+                let e_space = si * si + sq * sq;
+                strength += (e_mark - e_space).abs();
+                bits.push(if e_mark > e_space { 1 } else { 0 });
+                idx += sps;
+            }
+            if strength > best_strength {
+                best_strength = strength;
+                best_bits = bits;
+            }
+        }
+        best_bits
     }
 }
 
 impl Demodulator for AfskDemodulator {
     fn demodulate(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
-        
-        let mut bits = Vec::new();
-        
-        for &sample in samples {
-            if let Some(bit) = self.detect_bit(sample.real) {
-                bits.push(bit);
-                
-                // Start sync detection after getting some bits
-                if !self.sync_detected && bits.len() > 16 {
-                    self.sync_detected = true; // Simplified sync detection
-                }
-            }
-        }
-        
-        // Pack bits into bytes
+        let bits = self.demod_bits(samples);
+        self.sync_detected = bits.len() > 16;
+
+        // Pack bits into bytes, MSB first.
         let mut byte_value = 0u8;
         let mut bit_count = 0;
-        
         for bit in bits {
-            byte_value = (byte_value << 1) | bit;
+            byte_value = (byte_value << 1) | (bit & 1);
             bit_count += 1;
-            
             if bit_count == 8 {
                 output.push(byte_value);
                 byte_value = 0;
                 bit_count = 0;
             }
         }
-        
         Ok(())
     }
-    
+
     fn is_synchronized(&self) -> bool {
         self.sync_detected
     }
-    
+
     fn signal_quality(&self) -> SignalQuality {
         self.signal_quality.clone()
     }
-    
+
     fn reset(&mut self) {
-        self.mark_correlator.reset();
-        self.space_correlator.reset();
-        self.sample_counter = 0.0;
-        self.bit_samples = 0.0;
         self.sync_detected = false;
         self.signal_quality = SignalQuality::default();
+    }
+}
+
+impl crate::common::BitDemodulator for AfskDemodulator {
+    fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
+        output.clear();
+        *output = self.demod_bits(samples);
+        Ok(())
     }
 }
 
