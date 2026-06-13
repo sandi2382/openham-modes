@@ -20,7 +20,7 @@ pub mod prelude {
     pub use crate::{
         bpsk::{BpskModulator, BpskDemodulator},
         fsk::{FskModulator, FskDemodulator},
-        afsk::{AfskModulator, AfskDemodulator},
+        afsk::{AfskModulator, AfskDemodulator, AfskConfig},
         psk::{PskModulator, PskDemodulator, PskConfig},
         qam::{QamModulator, QamDemodulator, QamConfig},
         ofdm::{OfdmModulator, OfdmDemodulator, OfdmConfig},
@@ -29,7 +29,7 @@ pub mod prelude {
             FrequencyHoppingModulator, WaterfallModulator,
             MultiToneConfig, ChaosConfig,
         },
-        common::{Modulator, Demodulator, ModulationConfig},
+        common::{Modulator, Demodulator, ModulationConfig, SignalQuality},
         error::{ModemError, Result},
     };
 }

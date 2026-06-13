@@ -25,7 +25,7 @@ path = "src/bin/synth.rs"
 
 [[bin]]
 name = "openham"
-path = "src/bin/openham-main.rs"
+path = "src/bin/openham.rs"
 
 [dependencies]
 openham-core = { path = "../core" }
