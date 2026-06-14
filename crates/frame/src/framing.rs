@@ -99,19 +99,36 @@ impl Acquisition {
     pub fn find_frames(&self, bits: &[u8]) -> Vec<Frame> {
         let sync_bits = bytes_to_bits(&SYNC_WORD);
         let sync_len = sync_bits.len();
+        // Also match the bitwise-inverse sync. A coherent demodulator (e.g. BPSK)
+        // can recover the bit stream with a 180° phase ambiguity that inverts
+        // every bit; detecting the inverted sync lets us recover those frames by
+        // inverting the payload bits before parsing.
+        let inv_sync: Vec<u8> = sync_bits.iter().map(|b| b ^ 1).collect();
         let mut frames = Vec::new();
 
         let mut i = 0usize;
         while i + sync_len <= bits.len() {
-            let mismatches = sync_bits
-                .iter()
-                .zip(&bits[i..i + sync_len])
-                .filter(|(a, b)| a != b)
-                .count() as u32;
+            let window = &bits[i..i + sync_len];
+            let mismatches = sync_bits.iter().zip(window).filter(|(a, b)| a != b).count() as u32;
+            let inv_mismatches =
+                inv_sync.iter().zip(window).filter(|(a, b)| a != b).count() as u32;
 
-            if mismatches <= self.max_sync_errors {
+            let inverted = if mismatches <= self.max_sync_errors {
+                Some(false)
+            } else if inv_mismatches <= self.max_sync_errors {
+                Some(true)
+            } else {
+                None
+            };
+
+            if let Some(invert) = inverted {
                 let start = i + sync_len;
-                let frame_bytes = bits_to_bytes(&bits[start..]);
+                let frame_bytes = if invert {
+                    let flipped: Vec<u8> = bits[start..].iter().map(|b| b ^ 1).collect();
+                    bits_to_bytes(&flipped)
+                } else {
+                    bits_to_bytes(&bits[start..])
+                };
                 if let Ok(frame) = Frame::from_bytes(&frame_bytes) {
                     // Advance past the bits this frame consumed and keep scanning.
                     i = start + frame.total_size() * 8;
@@ -191,6 +208,17 @@ mod tests {
         }
         let found = Acquisition::new().with_max_sync_errors(4).find_frames(&bits);
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn acquires_inverted_frame() {
+        // A 180° phase ambiguity inverts every bit; acquisition must still work.
+        let frame = make_frame(b"inverted payload");
+        let framed = add_preamble_sync(&frame.to_bytes());
+        let bits: Vec<u8> = bytes_to_bits(&framed).iter().map(|b| b ^ 1).collect();
+        let found = Acquisition::new().find_frames(&bits);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].payload, b"inverted payload");
     }
 
     #[test]
