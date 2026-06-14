@@ -9,7 +9,7 @@
 use openham_core::buffer::Complex;
 use openham_core::channel::add_awgn_real_snr;
 use openham_frame::frame::{frame_flags, frame_types, Frame};
-use openham_frame::framing::{add_preamble_sync, Acquisition};
+use openham_frame::framing::{add_preamble_sync, bytes_to_bits, Acquisition};
 use openham_modem::afsk::{AfskConfig, AfskDemodulator, AfskModulator};
 use openham_modem::bpsk::{BpskDemodulator, BpskModulator};
 use openham_modem::common::{BitDemodulator, Demodulator, ModulationConfig, Modulator};
@@ -88,6 +88,78 @@ fn decodes_to(m: &Mode, samples: &[Complex], expect: &[u8]) -> bool {
     let mut out = Vec::new();
     let _ = d.demodulate(samples, &mut out);
     matches!(Frame::from_bytes(&out), Ok(f) if f.payload == expect)
+}
+
+/// Mirror the receiver pipeline (a correctness check, not a noise test): modulate
+/// `payload` in a frame wrapped with the preamble + sync word, place the burst
+/// after `lead_in` samples of dead air, demodulate to bytes, expand to bits, and
+/// acquire frames. Run clean; noise robustness is measured by the FER sweep.
+fn cli_acquire(m: &Mode, payload: &[u8], lead_in: usize) -> Vec<Frame> {
+    let frame = Frame::new(frame_types::DATA, 1, payload.to_vec(), frame_flags::NONE);
+    let framed = add_preamble_sync(&frame.to_bytes());
+    let mut modu = (m.make_mod)();
+    let mut sig = Vec::new();
+    modu.modulate(&framed, &mut sig).unwrap();
+
+    let mut stream = vec![Complex::new(0.0, 0.0); lead_in];
+    stream.extend_from_slice(&sig);
+    stream.extend(std::iter::repeat(Complex::new(0.0, 0.0)).take(4096));
+    let stream = through_wav(&stream);
+
+    let mut d = (m.make_demod)();
+    let mut bytes = Vec::new();
+    let _ = d.demodulate(&stream, &mut bytes);
+    Acquisition::new().find_frames(&bytes_to_bits(&bytes))
+}
+
+fn acquired(frames: &[Frame], payload: &[u8]) -> bool {
+    frames.iter().any(|f| f.payload == payload)
+}
+
+/// Every working mode must round-trip a range of payloads through the full
+/// preamble + sync + acquisition pipeline (file-aligned).
+#[test]
+fn working_modes_roundtrip_payloads() {
+    let long = vec![0x5Au8; 180];
+    let payloads: Vec<&[u8]> = vec![
+        b"A",
+        b"CQ",
+        b"CQ DE S56SPZ TEST 123 K QRZ 73",
+        b"\x00\x01\x02\x7f\x80\xfe\xff",
+        &long,
+    ];
+    for m in working_modes() {
+        for p in &payloads {
+            assert!(
+                acquired(&cli_acquire(&m, p, 0), p),
+                "{} failed to round-trip a {}-byte payload",
+                m.name,
+                p.len()
+            );
+        }
+    }
+}
+
+/// Every live-capable mode must acquire a frame at several arbitrary offsets
+/// (varied magnitudes and carrier phases).
+#[test]
+fn live_modes_acquire_at_multiple_offsets() {
+    const LIVE: &[&str] = &["bpsk", "fsk", "afsk", "ofdm64"];
+    let payload = b"CQ DE S56SPZ LIVE K";
+    let offsets = [100usize, 519, 1300, 2731, 5119];
+    for m in working_modes() {
+        if !LIVE.contains(&m.name) {
+            continue;
+        }
+        for &off in &offsets {
+            assert!(
+                acquired(&cli_acquire(&m, payload, off), payload),
+                "{} failed to acquire at offset {}",
+                m.name,
+                off
+            );
+        }
+    }
 }
 
 /// Always-run hard regression: every "working" mode must round-trip a frame

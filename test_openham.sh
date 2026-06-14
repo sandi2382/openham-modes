@@ -94,9 +94,9 @@ for sig in sine noise sweep two-tone; do
 done
 
 # =============================================================================
-section "End-to-end round-trip (working modes x encodings)"
+section "End-to-end round-trip (every working mode x every encoding)"
 for mode in $WORK_MODES; do
-    for enc in huffman ascii; do
+    for enc in raw huffman ascii utf8; do
         got="$(roundtrip "$mode" "$enc" "$MSG")"
         if [ "$got" = "$MSG" ]; then
             ok "$mode / $enc round-trip"
@@ -104,6 +104,17 @@ for mode in $WORK_MODES; do
             bad "$mode / $enc round-trip (got: '$got')"
         fi
     done
+done
+
+# =============================================================================
+section "Sample-rate variation (96 kHz)"
+for mode in $WORK_MODES; do
+    if $OPENHAM_BIN tx -o "$TMP/sr.wav" -t "$MSG" -c S56SPZ -m "$mode" --encoding huffman --sample-rate 96000 >/dev/null 2>&1; then
+        got="$($OPENHAM_BIN rx -i "$TMP/sr.wav" -m "$mode" --encoding huffman --sample-rate 96000 2>/dev/null | sed -nE 's/^  (.*)/\1/p' | tail -1)"
+        [ "$got" = "$MSG" ] && ok "$mode @ 96 kHz round-trip" || bad "$mode @ 96 kHz round-trip (got: '$got')"
+    else
+        bad "$mode @ 96 kHz round-trip (tx failed)"
+    fi
 done
 
 # =============================================================================
@@ -117,18 +128,20 @@ section "Live acquisition (transmission starts mid-stream)"
 if [ "$HAVE_PY" -eq 1 ]; then
     AMSG="CQ DE S56SPZ LIVE K"
     for mode in $LIVE_MODES; do
-        $OPENHAM_BIN tx -o "$TMP/tx.wav" -t "$AMSG" -c S56SPZ -m "$mode" --encoding huffman >/dev/null 2>&1
-        # Prepend ~3000 samples of lead-in noise to simulate a live capture.
-        python3 - "$TMP/tx.wav" "$TMP/off.wav" <<'PY'
+        for lead in 3000 5300; do
+            $OPENHAM_BIN tx -o "$TMP/tx.wav" -t "$AMSG" -c S56SPZ -m "$mode" --encoding huffman >/dev/null 2>&1
+            # Prepend lead-in noise to simulate a live capture starting mid-stream.
+            python3 - "$TMP/tx.wav" "$TMP/off.wav" "$lead" <<'PY'
 import sys, wave, struct, random
-src, dst = sys.argv[1], sys.argv[2]
+src, dst, lead = sys.argv[1], sys.argv[2], int(sys.argv[3])
 w = wave.open(src, 'rb'); p = w.getparams(); fr = w.readframes(w.getnframes()); w.close()
-lead = b''.join(struct.pack('<h', random.randint(-250, 250)) for _ in range(3000))
-o = wave.open(dst, 'wb'); o.setparams(p); o.writeframes(lead + fr); o.close()
+noise = b''.join(struct.pack('<h', random.randint(-250, 250)) for _ in range(lead))
+o = wave.open(dst, 'wb'); o.setparams(p); o.writeframes(noise + fr); o.close()
 PY
-        got="$($OPENHAM_BIN rx -i "$TMP/off.wav" -m "$mode" 2>/dev/null | sed -nE 's/^  (.*)/\1/p' | tail -1)"
-        [ "$got" = "$AMSG" ] && ok "$mode acquires at arbitrary offset" \
-            || bad "$mode arbitrary-offset acquisition (got: '$got')"
+            got="$($OPENHAM_BIN rx -i "$TMP/off.wav" -m "$mode" 2>/dev/null | sed -nE 's/^  (.*)/\1/p' | tail -1)"
+            [ "$got" = "$AMSG" ] && ok "$mode acquires at offset $lead" \
+                || bad "$mode acquisition at offset $lead (got: '$got')"
+        done
     done
 else
     info "python3 not found; skipping live-acquisition tests"
