@@ -155,6 +155,13 @@ $OPENHAM_BIN tx -o "$TMP/x.wav" -t "x" -c S56SPZ -m notamode >/dev/null 2>&1 \
     && bad "invalid modulation rejected" || ok "invalid modulation rejected"
 
 # =============================================================================
+section "Soundcard (smoke — no audio hardware required)"
+$OPENHAM_BIN listen --list-devices >/dev/null 2>&1 && ok "listen --list-devices" || bad "listen --list-devices"
+$OPENHAM_BIN tx --help 2>&1 | grep -q -- '--play'  && ok "tx --play present"      || bad "tx --play missing"
+$OPENHAM_BIN tx -t "x" -c S56SPZ -m bpsk >/dev/null 2>&1 \
+    && bad "tx with no output/--play rejected" || ok "tx with no output/--play rejected"
+
+# =============================================================================
 section "Summary"
 info "CLI / build checks: ${PASS} passed, ${FAIL} failed"
 info "Rust tests:         ${RUST_PASS} passed, ${RUST_FAIL} failed, ${RUST_IGN} ignored"
