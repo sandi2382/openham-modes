@@ -68,10 +68,18 @@ enum Commands {
 /// Transmission configuration
 #[derive(Parser, Clone, Serialize, Deserialize)]
 pub struct TransmitConfig {
-    /// Output audio file
+    /// Output audio file (optional if --play is given)
     #[arg(short, long)]
-    pub output: PathBuf,
-    
+    pub output: Option<PathBuf>,
+
+    /// Play the transmission to the sound card (for a connected radio)
+    #[arg(long)]
+    pub play: bool,
+
+    /// Output audio device name for --play (default: system default)
+    #[arg(long)]
+    pub device: Option<String>,
+
     /// Input text to transmit
     #[arg(short, long)]
     pub text: Option<String>,
@@ -228,19 +236,35 @@ pub struct ListenConfig {
     /// Center frequency in Hz
     #[arg(long, default_value = "1500")]
     pub center_freq: f64,
-    
+
+    /// Modulation to decode (or "auto" to try all)
+    #[arg(short, long, default_value = "auto")]
+    pub modulation: String,
+
+    /// Symbol rate in Hz
+    #[arg(long, default_value = "125")]
+    pub symbol_rate: f64,
+
+    /// Text encoding to decode with
+    #[arg(long, default_value = "huffman")]
+    pub encoding: EncodingType,
+
     /// Auto-detect all supported modes
     #[arg(long)]
     pub auto_detect: bool,
-    
-    /// Squelch threshold (0.0-1.0)
-    #[arg(long, default_value = "0.1")]
+
+    /// Squelch threshold: skip processing when input RMS is below this (0.0-1.0)
+    #[arg(long, default_value = "0.005")]
     pub squelch: f64,
-    
+
+    /// List available audio devices and exit
+    #[arg(long)]
+    pub list_devices: bool,
+
     /// Scan frequency range
     #[arg(long)]
     pub frequency_scan: bool,
-    
+
     /// Frequency scan range in Hz
     #[arg(long, default_value = "3000")]
     pub scan_range: f64,
@@ -1125,12 +1149,24 @@ fn main() -> Result<()> {
                 info!("Added AWGN at {snr_db} dB SNR");
             }
 
-            write_wav_file(&samples, &config.output, config.sample_rate)?;
+            if config.output.is_none() && !config.play {
+                anyhow::bail!("nothing to do: provide -o/--output to save a WAV and/or --play to the sound card");
+            }
 
-            println!("✓ Transmission complete: {} samples written to {:?}",
-                     samples.len(), config.output);
+            if let Some(ref path) = config.output {
+                write_wav_file(&samples, path, config.sample_rate)?;
+                println!("✓ Wrote {} samples to {:?}", samples.len(), path);
+            }
+
+            if config.play {
+                let dev = config.device.as_deref().unwrap_or("default output");
+                println!("▶ Playing {} samples to '{}'...", samples.len(), dev);
+                let audio: Vec<f32> = samples.iter().map(|s| s.real as f32).collect();
+                openham_tools::audio::play_real_samples(&audio, config.sample_rate as u32, config.device.as_deref())?;
+                println!("✓ Playback complete");
+            }
         },
-        
+
         Commands::Rx(config) => {
             info!("Starting reception from {:?}", config.input);
             
@@ -1161,10 +1197,89 @@ fn main() -> Result<()> {
             }
         },
         
-        Commands::Listen(_config) => {
-            println!("⚠ Continuous listening mode not yet implemented");
-            println!("This would enable real-time audio processing with auto-detection");
-            // TODO: Implement real-time audio processing
+        Commands::Listen(config) => {
+            if config.list_devices {
+                openham_tools::audio::list_devices()?;
+                return Ok(());
+            }
+
+            // Reuse the receive pipeline (demodulate -> acquire frames).
+            let rx_config = ReceiveConfig {
+                input: std::path::PathBuf::from("live"),
+                output: None,
+                modulation: config.modulation.clone(),
+                encoding: config.encoding,
+                sample_rate: config.sample_rate,
+                center_freq: config.center_freq,
+                symbol_rate: config.symbol_rate,
+                auto_detect: config.auto_detect,
+                threshold: 0.3,
+                all_modes: config.auto_detect || config.modulation == "auto",
+            };
+            let mut coordinator = ReceptionCoordinator::new(rx_config)?;
+
+            let capture =
+                openham_tools::audio::LiveCapture::start(config.sample_rate as u32, Some(config.input.as_str()))?;
+            println!(
+                "● Listening on '{}' @ {:.0} Hz, mode={} — press Ctrl-C to stop",
+                capture.device_name, config.sample_rate, config.modulation
+            );
+
+            let max_samples = (config.sample_rate * 4.0) as usize; // ~4 s rolling window
+            let keep_tail = (config.sample_rate * 1.5) as usize; // overlap kept after a decode
+            let mut rolling: Vec<Complex> = Vec::new();
+            let mut recent: std::collections::VecDeque<(u16, String)> =
+                std::collections::VecDeque::new();
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let new = capture.take();
+                if new.is_empty() {
+                    continue;
+                }
+                rolling.extend(new.iter().map(|s| Complex::new(*s as f64, 0.0)));
+                if rolling.len() > max_samples {
+                    let drop = rolling.len() - max_samples;
+                    rolling.drain(0..drop);
+                }
+
+                // Squelch: don't run the (expensive) demodulators on quiet audio.
+                let rms = (rolling.iter().map(|c| c.real * c.real).sum::<f64>()
+                    / rolling.len() as f64)
+                    .sqrt();
+                debug!("window rms={:.4}, {} samples", rms, rolling.len());
+                if rms < config.squelch {
+                    continue;
+                }
+
+                let messages = coordinator.receive(&rolling)?;
+                let mut decoded_any = false;
+                for m in messages {
+                    let key = (m.sequence, m.text.clone());
+                    if recent.contains(&key) {
+                        continue;
+                    }
+                    recent.push_back(key);
+                    if recent.len() > 64 {
+                        recent.pop_front();
+                    }
+                    decoded_any = true;
+                    let now = chrono::Local::now().format("%H:%M:%S");
+                    println!(
+                        "[{now}] {:>6} | SNR {:5.1} dB EVM {:4.1}% | {}",
+                        m.modulation,
+                        m.signal_quality.snr_db,
+                        m.signal_quality.evm_percent,
+                        m.text
+                    );
+                }
+                // After a decode, keep only a short tail so the same frame is not
+                // re-detected on the next pass.
+                if decoded_any && rolling.len() > keep_tail {
+                    let drop = rolling.len() - keep_tail;
+                    rolling.drain(0..drop);
+                }
+            }
         },
         
         Commands::Analyze(_config) => {

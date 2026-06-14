@@ -43,10 +43,12 @@ tracing-subscriber.workspace = true
 
 # Audio I/O
 hound.workspace = true
+cpal.workspace = true
 
 # Additional dependencies for main tool
 rand = "0.8"
 base64 = "0.21"
+chrono.workspace = true
 
 [dev-dependencies]
 quickcheck.workspace = true

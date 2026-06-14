@@ -35,6 +35,7 @@ realfft = "3.0"
 # Audio and sample handling
 hound = "3.5"  # WAV file I/O
 dasp = "0.11"  # Digital signal processing
+cpal = "0.15"  # Real-time soundcard capture/playback
 
 # Serialization and config
 toml = "0.8"

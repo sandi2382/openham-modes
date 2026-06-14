@@ -1,5 +1,6 @@
 //! OpenHam Tools library
 
+pub mod audio;
 pub mod tx;
 pub mod rx;
 pub mod analyze;
