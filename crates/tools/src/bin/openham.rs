@@ -761,22 +761,16 @@ impl ReceptionCoordinator {
         let mut demodulators: Vec<(String, Box<dyn Demodulator>)> = Vec::new();
         
         if config.modulation == "auto" || config.all_modes {
-            // Add all supported demodulators for auto-detection
+            // Auto-detect over the modes that actually acquire and decode a live
+            // transmission. psk4/ofdm64 are omitted: they are not robust to an
+            // arbitrary-offset live stream and add per-cycle cost; decode them by
+            // naming the mode explicitly (-m psk4 / -m ofdm64).
             demodulators.push(("BPSK".to_string(), Box::new(BpskDemodulator::new(mod_config.clone())?)));
             demodulators.push(("FSK".to_string(), Box::new(FskDemodulator::new(mod_config.clone())?)));
-            
-            // Add PSK variants
-            let psk4_config = PskConfig::qpsk();
-            demodulators.push(("PSK4".to_string(), Box::new(PskDemodulator::new(mod_config.clone(), psk4_config)?)));
-            
-            // Add AFSK (Bell-202: 1200 baud, must match the transmitter)
+            // AFSK (Bell-202: 1200 baud, must match the transmitter)
             let afsk_config = AfskConfig::bell_202();
             demodulators.push(("AFSK".to_string(), Box::new(AfskDemodulator::new(mod_config.clone(), afsk_config)?)));
-            
-            // Add OFDM
-            let ofdm_config = OfdmConfig::amateur_radio_64();
-            demodulators.push(("OFDM64".to_string(), Box::new(OfdmDemodulator::new(mod_config.clone(), ofdm_config)?)));
-            
+
             info!("Auto-detection mode: {} demodulators active", demodulators.len());
         } else {
             // Single demodulator based on specified type
@@ -1271,12 +1265,16 @@ fn main() -> Result<()> {
                 capture.device_name, config.sample_rate, config.modulation
             );
 
-            // Accumulate audio into a rolling window and decode continuously. On a
-            // successful decode we clear the window, so each transmission is
-            // independent: repeated or back-to-back messages are all reported,
-            // and the same frame is never reported twice from the sliding window.
-            let max_samples = (config.sample_rate * 6.0) as usize; // cap if no decode
+            // Continuous decode. Each captured chunk is gated by signal presence:
+            // accumulate only while a signal is present, decode the window, and
+            // reset it on a successful decode OR after a short silence gap between
+            // transmissions. This keeps the processed window down to ~one
+            // transmission so decoding stays real-time and doesn't fall behind on
+            // a busy band (the previous version grew the window whenever nothing
+            // decoded, which lagged and dropped later transmissions).
+            let max_samples = (config.sample_rate * 3.0) as usize;
             let mut rolling: Vec<Complex> = Vec::new();
+            let mut silence = 0u32;
 
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(250));
@@ -1284,19 +1282,27 @@ fn main() -> Result<()> {
                 if new.is_empty() {
                     continue;
                 }
+
+                let chunk_rms = (new.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>()
+                    / new.len() as f64)
+                    .sqrt();
+                debug!("chunk rms={:.4}, window {} samples", chunk_rms, rolling.len());
+
+                if chunk_rms < config.squelch {
+                    // Quiet chunk — a gap between transmissions. Reset after a
+                    // brief hangover so the next transmission decodes fresh.
+                    silence += 1;
+                    if silence >= 2 {
+                        rolling.clear();
+                    }
+                    continue;
+                }
+                silence = 0;
+
                 rolling.extend(new.iter().map(|s| Complex::new(*s as f64, 0.0)));
                 if rolling.len() > max_samples {
                     let drop = rolling.len() - max_samples;
                     rolling.drain(0..drop);
-                }
-
-                // Squelch: don't run the (expensive) demodulators on quiet audio.
-                let rms = (rolling.iter().map(|c| c.real * c.real).sum::<f64>()
-                    / rolling.len() as f64)
-                    .sqrt();
-                debug!("window rms={:.4}, {} samples", rms, rolling.len());
-                if rms < config.squelch {
-                    continue;
                 }
 
                 let messages = coordinator.receive(&rolling)?;
