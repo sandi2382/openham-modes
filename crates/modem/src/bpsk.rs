@@ -136,129 +136,101 @@ impl BpskDemodulator {
     }
 }
 
+impl BpskDemodulator {
+    /// Recover the bit stream at the best symbol timing, with carrier phase
+    /// recovery so a coherent BPSK burst that starts at an arbitrary offset
+    /// (hence an arbitrary carrier phase) still decodes.
+    ///
+    /// Timing is chosen by total complex symbol magnitude, which is
+    /// phase-invariant. The residual carrier phase is estimated by squaring the
+    /// symbols — which strips the 0/π data modulation — averaging, and halving
+    /// the resulting angle. A 180° ambiguity remains (squaring loses the sign);
+    /// the framing layer's inversion-tolerant sync search resolves it.
+    fn recover_bits(&self, samples: &[Complex]) -> Vec<u8> {
+        let sps = self.config.samples_per_symbol() as usize;
+        if sps == 0 || samples.len() < sps {
+            return Vec::new();
+        }
+        let omega = 2.0 * PI * self.config.carrier_frequency / self.config.sample_rate;
+
+        // Downmix to complex baseband with a conjugate LO at the absolute index.
+        let mut bb: Vec<Complex> = Vec::with_capacity(samples.len());
+        for (i, s) in samples.iter().enumerate() {
+            let phase = omega * (i as f64);
+            let (c, sn) = (phase.cos(), phase.sin());
+            bb.push(Complex::new(s.real * c + s.imag * sn, s.imag * c - s.real * sn));
+        }
+
+        // Symbol-timing offset search by total symbol magnitude (phase-invariant).
+        let mut best_syms: Vec<Complex> = Vec::new();
+        let mut best_strength = -1.0f64;
+        for offset in 0..sps {
+            let mut syms = Vec::new();
+            let mut strength = 0.0f64;
+            let mut i = offset;
+            while i + sps <= bb.len() {
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for s in &bb[i..i + sps] {
+                    re += s.real;
+                    im += s.imag;
+                }
+                let sym = Complex::new(re, im);
+                strength += sym.magnitude();
+                syms.push(sym);
+                i += sps;
+            }
+            if strength > best_strength {
+                best_strength = strength;
+                best_syms = syms;
+            }
+        }
+
+        // Carrier phase recovery: the average of the squared symbols has phase 2θ.
+        let (mut s2re, mut s2im) = (0.0f64, 0.0f64);
+        for s in &best_syms {
+            s2re += s.real * s.real - s.imag * s.imag;
+            s2im += 2.0 * s.real * s.imag;
+        }
+        let theta = 0.5 * s2im.atan2(s2re);
+        let (ct, st) = (theta.cos(), theta.sin());
+
+        // Rotate each symbol by -θ and decide on the real axis.
+        best_syms
+            .iter()
+            .map(|s| if s.real * ct + s.imag * st > 0.0 { 1u8 } else { 0u8 })
+            .collect()
+    }
+}
+
 impl Demodulator for BpskDemodulator {
     fn demodulate(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
+        let bits = self.recover_bits(samples);
+        self.is_sync = !bits.is_empty();
 
-        let samples_per_symbol = self.config.samples_per_symbol() as usize;
-        if samples_per_symbol == 0 { return Ok(()); }
-
-        // Precompute baseband (real) using a local oscillator based on absolute index
-        let omega = 2.0 * PI * self.config.carrier_frequency / self.config.sample_rate;
-        let mut bb_real: Vec<f64> = Vec::with_capacity(samples.len());
-        for (i, s) in samples.iter().enumerate() {
-            let phase = omega * (i as f64);
-            let c = phase.cos();
-            let si = phase.sin();
-            // Real part after downmix with conjugate LO: I*c + Q*si
-            bb_real.push(s.real * c + s.imag * si);
+        // Pack bits into bytes, MSB first.
+        let mut byte = 0u8;
+        let mut n = 0;
+        for b in bits {
+            byte = (byte << 1) | (b & 1);
+            n += 1;
+            if n == 8 {
+                output.push(byte);
+                byte = 0;
+                n = 0;
+            }
         }
-
-        // Try all symbol phase offsets, choose the one with earliest sync;
-        // If none contain sync, choose the strongest (integrated magnitude) candidate.
-        let sync: [u8; 8] = [0x55, 0x55, 0x55, 0x55, 0xAA, 0xAA, 0x7E, 0x7E];
-        let mut candidate_streams: Vec<Vec<u8>> = Vec::new();
-        let mut candidate_strengths: Vec<f64> = Vec::new();
-        let mut best_idx: Option<(usize, usize)> = None; // (offset, position)
-
-        for offset in 0..samples_per_symbol {
-            let mut tmp_bits: Vec<u8> = Vec::new();
-            let mut tmp_bytes: Vec<u8> = Vec::new();
-            let mut strength_acc: f64 = 0.0;
-
-            let mut i = offset;
-            while i + samples_per_symbol <= bb_real.len() {
-                let mut acc = 0f64;
-                let end = i + samples_per_symbol;
-                let mut j = i;
-                while j < end {
-                    acc += bb_real[j];
-                    j += 1;
-                }
-                strength_acc += acc.abs();
-                let bit = if acc > 0.0 { 1u8 } else { 0u8 };
-                tmp_bits.push(bit);
-                if tmp_bits.len() == 8 {
-                    let mut byte = 0u8;
-                    for (k, &b) in tmp_bits.iter().enumerate() {
-                        if b != 0 { byte |= 1 << (7 - k); }
-                    }
-                    tmp_bytes.push(byte);
-                    tmp_bits.clear();
-                }
-                i += samples_per_symbol;
-            }
-            if !tmp_bits.is_empty() {
-                let mut byte = 0u8;
-                for (k, &b) in tmp_bits.iter().enumerate() {
-                    if b != 0 { byte |= 1 << (7 - k); }
-                }
-                tmp_bytes.push(byte);
-            }
-
-            // Skip leading CW tone artifacts: trim leading 0x00/0xFF when searching for sync
-            let mut search_start = 0usize;
-            while search_start < tmp_bytes.len() && (tmp_bytes[search_start] == 0x00 || tmp_bytes[search_start] == 0xFF) {
-                search_start += 1;
-            }
-
-            // Search for sync sequence in tmp_bytes (from trimmed start)
-            let mut found_pos: Option<usize> = None;
-            if tmp_bytes.len() >= sync.len() && search_start <= tmp_bytes.len() - sync.len() {
-                for pos in search_start..=tmp_bytes.len() - sync.len() {
-                    if &tmp_bytes[pos..pos + sync.len()] == sync {
-                        found_pos = Some(pos);
-                        break;
-                    }
-                }
-            }
-
-            if let Some(pos) = found_pos {
-                match best_idx {
-                    None => best_idx = Some((offset, pos)),
-                    Some((_, best_pos)) => {
-                        if pos < best_pos { best_idx = Some((offset, pos)); }
-                    }
-                }
-            }
-
-            candidate_strengths.push(strength_acc);
-            candidate_streams.push(tmp_bytes);
-        }
-
-        // Output the best candidate if found by sync
-        if let Some((best_offset, _)) = best_idx {
-            output.extend_from_slice(&candidate_streams[best_offset]);
-            self.is_sync = true;
-            return Ok(());
-        }
-
-        // Otherwise, choose the strongest candidate by integrated magnitude
-        if !candidate_streams.is_empty() {
-            let mut best_o = 0usize;
-            let mut best_s = candidate_strengths[0];
-            for o in 1..candidate_strengths.len() {
-                if candidate_strengths[o] > best_s {
-                    best_s = candidate_strengths[o];
-                    best_o = o;
-                }
-            }
-            output.extend_from_slice(&candidate_streams[best_o]);
-            self.is_sync = true;
-            return Ok(());
-        }
-
         Ok(())
     }
-    
+
     fn is_synchronized(&self) -> bool {
         self.is_sync
     }
-    
+
     fn signal_quality(&self) -> SignalQuality {
         self.signal_quality.clone()
     }
-    
+
     fn reset(&mut self) {
         self.pulse_shaper.reset();
         self.phase = 0.0;
@@ -271,39 +243,7 @@ impl Demodulator for BpskDemodulator {
 impl crate::common::BitDemodulator for BpskDemodulator {
     fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
-        let sps = self.config.samples_per_symbol() as usize;
-        if sps == 0 || samples.len() < sps {
-            return Ok(());
-        }
-
-        // Coherent downmix to baseband (real component), absolute-index LO.
-        let omega = 2.0 * PI * self.config.carrier_frequency / self.config.sample_rate;
-        let mut bb_real: Vec<f64> = Vec::with_capacity(samples.len());
-        for (i, s) in samples.iter().enumerate() {
-            let phase = omega * (i as f64);
-            bb_real.push(s.real * phase.cos() + s.imag * phase.sin());
-        }
-
-        // Choose the symbol-timing offset with the strongest integrated energy
-        // and emit its bit decisions (no framing/sync logic).
-        let mut best_bits: Vec<u8> = Vec::new();
-        let mut best_strength = -1.0f64;
-        for offset in 0..sps {
-            let mut bits = Vec::new();
-            let mut strength = 0.0f64;
-            let mut i = offset;
-            while i + sps <= bb_real.len() {
-                let acc: f64 = bb_real[i..i + sps].iter().sum();
-                strength += acc.abs();
-                bits.push(if acc > 0.0 { 1 } else { 0 });
-                i += sps;
-            }
-            if strength > best_strength {
-                best_strength = strength;
-                best_bits = bits;
-            }
-        }
-        *output = best_bits;
+        *output = self.recover_bits(samples);
         Ok(())
     }
 }
