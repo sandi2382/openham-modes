@@ -80,6 +80,10 @@ pub struct TransmitConfig {
     #[arg(long)]
     pub device: Option<String>,
 
+    /// Interactive transmit: read messages from stdin and play each (keyboard QSO)
+    #[arg(long)]
+    pub interactive: bool,
+
     /// Input text to transmit
     #[arg(short, long)]
     pub text: Option<String>,
@@ -924,6 +928,43 @@ pub struct DecodedMessage {
     pub timestamp: std::time::SystemTime,
 }
 
+/// Interactive transmit: read a message per line from stdin and play each to the
+/// sound card. A keyboard-QSO counterpart to `listen`.
+fn run_interactive_tx(config: &TransmitConfig) -> Result<()> {
+    use std::io::{BufRead, Write};
+    let dev = config.device.as_deref().unwrap_or("default output");
+    println!(
+        "Interactive transmit — {:?} @ {} baud to '{}'.",
+        config.modulation, config.symbol_rate, dev
+    );
+    println!("Type a message and press Enter to send; empty line or Ctrl-D to quit.");
+
+    let stdin = std::io::stdin();
+    loop {
+        print!("tx> ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            break; // EOF (Ctrl-D)
+        }
+        let text = line.trim_end_matches(['\n', '\r']).to_string();
+        if text.is_empty() {
+            break;
+        }
+
+        let mut cfg = config.clone();
+        cfg.text = Some(text);
+        cfg.interactive = false;
+        let mut coordinator = TransmissionCoordinator::new(cfg)?;
+        let samples = coordinator.generate_transmission()?;
+        let audio: Vec<f32> = samples.iter().map(|s| s.real as f32).collect();
+        println!("  ▶ transmitting {} samples...", audio.len());
+        openham_tools::audio::play_real_samples(&audio, config.sample_rate as u32, config.device.as_deref())?;
+    }
+    println!("Interactive transmit ended.");
+    Ok(())
+}
+
 /// Write audio samples to WAV file
 fn write_wav_file(samples: &[Complex], path: &PathBuf, sample_rate: f64) -> Result<()> {
     let spec = hound::WavSpec {
@@ -1137,7 +1178,12 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Tx(config) => {
             info!("Starting transmission with {:?} modulation", config.modulation);
-            
+
+            if config.interactive {
+                run_interactive_tx(&config)?;
+                return Ok(());
+            }
+
             let mut coordinator = TransmissionCoordinator::new(config.clone())?;
             let mut samples = coordinator.generate_transmission()?;
 
@@ -1225,14 +1271,15 @@ fn main() -> Result<()> {
                 capture.device_name, config.sample_rate, config.modulation
             );
 
-            let max_samples = (config.sample_rate * 4.0) as usize; // ~4 s rolling window
-            let keep_tail = (config.sample_rate * 1.5) as usize; // overlap kept after a decode
+            // Accumulate audio into a rolling window and decode continuously. On a
+            // successful decode we clear the window, so each transmission is
+            // independent: repeated or back-to-back messages are all reported,
+            // and the same frame is never reported twice from the sliding window.
+            let max_samples = (config.sample_rate * 6.0) as usize; // cap if no decode
             let mut rolling: Vec<Complex> = Vec::new();
-            let mut recent: std::collections::VecDeque<(u16, String)> =
-                std::collections::VecDeque::new();
 
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::thread::sleep(std::time::Duration::from_millis(250));
                 let new = capture.take();
                 if new.is_empty() {
                     continue;
@@ -1253,31 +1300,18 @@ fn main() -> Result<()> {
                 }
 
                 let messages = coordinator.receive(&rolling)?;
-                let mut decoded_any = false;
-                for m in messages {
-                    let key = (m.sequence, m.text.clone());
-                    if recent.contains(&key) {
-                        continue;
+                if !messages.is_empty() {
+                    for m in &messages {
+                        let now = chrono::Local::now().format("%H:%M:%S");
+                        println!(
+                            "[{now}] {:>6} | SNR {:5.1} dB EVM {:4.1}% | {}",
+                            m.modulation,
+                            m.signal_quality.snr_db,
+                            m.signal_quality.evm_percent,
+                            m.text
+                        );
                     }
-                    recent.push_back(key);
-                    if recent.len() > 64 {
-                        recent.pop_front();
-                    }
-                    decoded_any = true;
-                    let now = chrono::Local::now().format("%H:%M:%S");
-                    println!(
-                        "[{now}] {:>6} | SNR {:5.1} dB EVM {:4.1}% | {}",
-                        m.modulation,
-                        m.signal_quality.snr_db,
-                        m.signal_quality.evm_percent,
-                        m.text
-                    );
-                }
-                // After a decode, keep only a short tail so the same frame is not
-                // re-detected on the next pass.
-                if decoded_any && rolling.len() > keep_tail {
-                    let drop = rolling.len() - keep_tail;
-                    rolling.drain(0..drop);
+                    rolling.clear();
                 }
             }
         },
