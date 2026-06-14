@@ -206,19 +206,21 @@ impl AfskDemodulator {
     /// mark/space energy detection. Trying every offset lets the receiver lock
     /// onto a burst that begins anywhere in the stream — required for live audio
     /// where a transmission does not start at the first sample.
-    fn demod_bits(&self, samples: &[Complex]) -> Vec<u8> {
+    fn demod_bits(&self, samples: &[Complex]) -> (Vec<u8>, SignalQuality) {
         let sps = self.bit_duration as usize;
         if sps == 0 || samples.len() < sps {
-            return Vec::new();
+            return (Vec::new(), SignalQuality::default());
         }
         let mark = self.afsk_config.mark_frequency;
         let space = self.afsk_config.space_frequency;
         let fs = self.config.sample_rate;
 
         let mut best_bits: Vec<u8> = Vec::new();
+        let mut best_energies: Vec<(f64, f64)> = Vec::new(); // (winner, loser) per symbol
         let mut best_strength = -1.0f64;
         for offset in 0..sps {
             let mut bits = Vec::new();
+            let mut energies = Vec::new();
             let mut strength = 0.0f64;
             let mut idx = offset;
             while idx + sps <= samples.len() {
@@ -234,22 +236,25 @@ impl AfskDemodulator {
                 let e_mark = mi * mi + mq * mq;
                 let e_space = si * si + sq * sq;
                 strength += (e_mark - e_space).abs();
+                energies.push((e_mark.max(e_space), e_mark.min(e_space)));
                 bits.push(if e_mark > e_space { 1 } else { 0 });
                 idx += sps;
             }
             if strength > best_strength {
                 best_strength = strength;
                 best_bits = bits;
+                best_energies = energies;
             }
         }
-        best_bits
+        (best_bits, crate::common::discrimination_quality(&best_energies))
     }
 }
 
 impl Demodulator for AfskDemodulator {
     fn demodulate(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
-        let bits = self.demod_bits(samples);
+        let (bits, quality) = self.demod_bits(samples);
+        self.signal_quality = quality;
         self.sync_detected = bits.len() > 16;
 
         // Pack bits into bytes, MSB first.
@@ -284,7 +289,9 @@ impl Demodulator for AfskDemodulator {
 impl crate::common::BitDemodulator for AfskDemodulator {
     fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
-        *output = self.demod_bits(samples);
+        let (bits, quality) = self.demod_bits(samples);
+        self.signal_quality = quality;
+        *output = bits;
         Ok(())
     }
 }

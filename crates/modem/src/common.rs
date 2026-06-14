@@ -55,6 +55,31 @@ pub struct SignalQuality {
     pub phase_error_deg: f64,
 }
 
+/// Estimate an SNR-like quality from per-symbol `(winner, loser)` energies: the
+/// mean winner/loser ratio in dB over the signal-bearing symbols (those above a
+/// fraction of the peak energy). Higher means cleaner tone separation. Used by
+/// the non-coherent FSK/AFSK demodulators, which have no constellation from
+/// which to take an EVM.
+pub fn discrimination_quality(energies: &[(f64, f64)]) -> SignalQuality {
+    let max_e = energies.iter().map(|(w, _)| *w).fold(0.0f64, f64::max);
+    if max_e <= 0.0 {
+        return SignalQuality::default();
+    }
+    let thresh = 0.2 * max_e;
+    let (mut sum_db, mut n) = (0.0f64, 0usize);
+    for &(w, l) in energies {
+        if w > thresh {
+            let ratio = if l > 0.0 { w / l } else { 1.0e6 };
+            sum_db += 10.0 * ratio.log10();
+            n += 1;
+        }
+    }
+    SignalQuality {
+        snr_db: if n > 0 { (sum_db / n as f64).min(60.0) } else { 0.0 },
+        ..Default::default()
+    }
+}
+
 /// Common modulation configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModulationConfig {

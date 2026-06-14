@@ -75,9 +75,7 @@ pub struct FskDemodulator {
     config: ModulationConfig,
     freq_mark: f64,   // Frequency for '1' bit
     freq_space: f64,  // Frequency for '0' bit
-    buffer: Vec<Complex>,
-    bit_buffer: u8,
-    bit_count: usize,
+    signal_quality: SignalQuality,
 }
 
 impl FskDemodulator {
@@ -86,142 +84,29 @@ impl FskDemodulator {
         let shift = 500.0; // 500 Hz frequency shift
         let freq_mark = config.carrier_frequency + shift / 2.0;
         let freq_space = config.carrier_frequency - shift / 2.0;
-        
-        Ok(Self { 
+
+        Ok(Self {
             config,
             freq_mark,
             freq_space,
-            buffer: Vec::new(),
-            bit_buffer: 0,
-            bit_count: 0,
+            signal_quality: SignalQuality::default(),
         })
     }
-}
 
-impl Demodulator for FskDemodulator {
-    fn demodulate(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
-        self.buffer.extend_from_slice(samples);
-        output.clear();
-
-        let samples_per_symbol = self.config.samples_per_symbol() as usize;
-        if samples_per_symbol == 0 || self.buffer.len() < samples_per_symbol { return Ok(()); }
-
-        // Helper: demodulate from a given offset building bytes
-    let sync: [u8; 8] = [0x55, 0x55, 0x55, 0x55, 0xAA, 0xAA, 0x7E, 0x7E];
-    let sync_inv: [u8; 8] = [0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x81, 0x81];
-        let mut candidate_streams: Vec<Vec<u8>> = Vec::new();
-        let mut candidate_strengths: Vec<f64> = Vec::new();
-        let mut best_sync: Option<(usize, usize)> = None; // (offset, pos)
-
-        for offset in 0..samples_per_symbol {
-            let mut bits_acc: Vec<u8> = Vec::new();
-            let mut bytes_acc: Vec<u8> = Vec::new();
-            let mut strength_acc = 0.0f64;
-
-            let mut idx = offset;
-            while idx + samples_per_symbol <= self.buffer.len() {
-                let symbol_samples = &self.buffer[idx..idx + samples_per_symbol];
-                // Noncoherent energy detection at mark/space
-                let mut mi = 0.0; let mut mq = 0.0;
-                let mut si = 0.0; let mut sq = 0.0;
-                for (k, sample) in symbol_samples.iter().enumerate() {
-                    let t = k as f64 / self.config.sample_rate;
-                    let cr_m = (2.0 * PI * self.freq_mark * t).cos();
-                    let sr_m = (2.0 * PI * self.freq_mark * t).sin();
-                    mi += sample.real * cr_m;
-                    mq += sample.real * (-sr_m);
-                    let cr_s = (2.0 * PI * self.freq_space * t).cos();
-                    let sr_s = (2.0 * PI * self.freq_space * t).sin();
-                    si += sample.real * cr_s;
-                    sq += sample.real * (-sr_s);
-                }
-                let e_mark = mi * mi + mq * mq;
-                let e_space = si * si + sq * sq;
-                // Discrimination margin: peaks when the window aligns with a symbol.
-                strength_acc += (e_mark - e_space).abs();
-                let bit = if e_mark > e_space { 1u8 } else { 0u8 };
-                bits_acc.push(bit);
-                if bits_acc.len() == 8 {
-                    let mut byte = 0u8;
-                    for (j, &b) in bits_acc.iter().enumerate() { if b != 0 { byte |= 1 << (7 - j); } }
-                    bytes_acc.push(byte);
-                    bits_acc.clear();
-                }
-                idx += samples_per_symbol;
-            }
-            if !bits_acc.is_empty() {
-                let mut byte = 0u8;
-                for (j, &b) in bits_acc.iter().enumerate() { if b != 0 { byte |= 1 << (7 - j); } }
-                bytes_acc.push(byte);
-            }
-
-            // Search for sync
-            let mut found: Option<usize> = None;
-            if bytes_acc.len() >= sync.len() {
-                for pos in 0..=bytes_acc.len() - sync.len() {
-                    if &bytes_acc[pos..pos + sync.len()] == sync { found = Some(pos); break; }
-                    if &bytes_acc[pos..pos + sync_inv.len()] == sync_inv { found = Some(pos); break; }
-                }
-            }
-            if let Some(pos) = found {
-                match best_sync { None => best_sync = Some((offset, pos)), Some((_, bp)) if pos < bp => best_sync = Some((offset, pos)), _ => {} }
-            }
-            candidate_streams.push(bytes_acc);
-            candidate_strengths.push(strength_acc);
-        }
-
-        if let Some((best_o, _)) = best_sync {
-            output.extend_from_slice(&candidate_streams[best_o]);
-            return Ok(());
-        }
-
-        // Fallback: no sync found. Every offset yields ~the same byte count, so
-        // picking by length is unreliable (it tie-breaks to a misaligned offset).
-        // Instead choose the offset with the strongest mark/space discrimination,
-        // which peaks at the correct symbol alignment (cf. the BPSK demodulator).
-        if !candidate_strengths.is_empty() {
-            let mut best_o = 0usize;
-            let mut best_s = candidate_strengths[0];
-            for o in 1..candidate_strengths.len() {
-                if candidate_strengths[o] > best_s {
-                    best_s = candidate_strengths[o];
-                    best_o = o;
-                }
-            }
-            output.extend_from_slice(&candidate_streams[best_o]);
-        }
-        Ok(())
-    }
-    
-    fn is_synchronized(&self) -> bool {
-        true // Simple implementation always claims sync
-    }
-    
-    fn signal_quality(&self) -> SignalQuality {
-        SignalQuality::default()
-    }
-    
-    fn reset(&mut self) {
-        self.buffer.clear();
-        self.bit_buffer = 0;
-        self.bit_count = 0;
-    }
-}
-
-impl crate::common::BitDemodulator for FskDemodulator {
-    fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
-        output.clear();
+    /// Recover the bit stream at the best symbol-timing offset using per-symbol
+    /// noncoherent mark/space energy detection. Trying every offset lets the
+    /// receiver lock onto a burst that begins anywhere in the stream.
+    fn demod_bits(&self, samples: &[Complex]) -> (Vec<u8>, SignalQuality) {
         let sps = self.config.samples_per_symbol() as usize;
         if sps == 0 || samples.len() < sps {
-            return Ok(());
+            return (Vec::new(), SignalQuality::default());
         }
-
-        // Choose the symbol-timing offset with the strongest mark/space
-        // discrimination and emit its bit decisions (no framing/sync logic).
         let mut best_bits: Vec<u8> = Vec::new();
+        let mut best_energies: Vec<(f64, f64)> = Vec::new();
         let mut best_strength = -1.0f64;
         for offset in 0..sps {
             let mut bits = Vec::new();
+            let mut energies = Vec::new();
             let mut strength = 0.0f64;
             let mut idx = offset;
             while idx + sps <= samples.len() {
@@ -237,15 +122,60 @@ impl crate::common::BitDemodulator for FskDemodulator {
                 let e_mark = mi * mi + mq * mq;
                 let e_space = si * si + sq * sq;
                 strength += (e_mark - e_space).abs();
+                energies.push((e_mark.max(e_space), e_mark.min(e_space)));
                 bits.push(if e_mark > e_space { 1 } else { 0 });
                 idx += sps;
             }
             if strength > best_strength {
                 best_strength = strength;
                 best_bits = bits;
+                best_energies = energies;
             }
         }
-        *output = best_bits;
+        (best_bits, crate::common::discrimination_quality(&best_energies))
+    }
+}
+
+impl Demodulator for FskDemodulator {
+    fn demodulate(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
+        output.clear();
+        let (bits, quality) = self.demod_bits(samples);
+        self.signal_quality = quality;
+
+        // Pack bits into bytes, MSB first.
+        let mut byte = 0u8;
+        let mut n = 0;
+        for b in bits {
+            byte = (byte << 1) | (b & 1);
+            n += 1;
+            if n == 8 {
+                output.push(byte);
+                byte = 0;
+                n = 0;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_synchronized(&self) -> bool {
+        true // Timing recovery always produces a stream; framing handles sync.
+    }
+
+    fn signal_quality(&self) -> SignalQuality {
+        self.signal_quality.clone()
+    }
+
+    fn reset(&mut self) {
+        self.signal_quality = SignalQuality::default();
+    }
+}
+
+impl crate::common::BitDemodulator for FskDemodulator {
+    fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
+        output.clear();
+        let (bits, quality) = self.demod_bits(samples);
+        self.signal_quality = quality;
+        *output = bits;
         Ok(())
     }
 }

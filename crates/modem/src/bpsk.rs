@@ -146,10 +146,10 @@ impl BpskDemodulator {
     /// symbols — which strips the 0/π data modulation — averaging, and halving
     /// the resulting angle. A 180° ambiguity remains (squaring loses the sign);
     /// the framing layer's inversion-tolerant sync search resolves it.
-    fn recover_bits(&self, samples: &[Complex]) -> Vec<u8> {
+    fn recover_bits(&self, samples: &[Complex]) -> (Vec<u8>, SignalQuality) {
         let sps = self.config.samples_per_symbol() as usize;
         if sps == 0 || samples.len() < sps {
-            return Vec::new();
+            return (Vec::new(), SignalQuality::default());
         }
         let omega = 2.0 * PI * self.config.carrier_frequency / self.config.sample_rate;
 
@@ -194,18 +194,58 @@ impl BpskDemodulator {
         let theta = 0.5 * s2im.atan2(s2re);
         let (ct, st) = (theta.cos(), theta.sin());
 
-        // Rotate each symbol by -θ and decide on the real axis.
-        best_syms
-            .iter()
-            .map(|s| if s.real * ct + s.imag * st > 0.0 { 1u8 } else { 0u8 })
-            .collect()
+        // Decide bits on the rotated real axis. Estimate quality (EVM, and SNR
+        // derived from it) over the strong, signal-bearing symbols only, so that
+        // dead air at the start/end of the capture does not skew the result.
+        let max_mag = best_syms.iter().map(|s| s.magnitude()).fold(0.0_f64, f64::max);
+        let thresh = 0.3 * max_mag;
+
+        let mut bits = Vec::with_capacity(best_syms.len());
+        let (mut amp_sum, mut count) = (0.0f64, 0usize);
+        for s in &best_syms {
+            let re = s.real * ct + s.imag * st;
+            bits.push(if re > 0.0 { 1u8 } else { 0u8 });
+            if s.magnitude() > thresh {
+                amp_sum += re.abs();
+                count += 1;
+            }
+        }
+        let amp = if count > 0 { amp_sum / count as f64 } else { 0.0 };
+
+        let mut err2 = 0.0;
+        if amp > 0.0 {
+            for s in &best_syms {
+                if s.magnitude() > thresh {
+                    let re = s.real * ct + s.imag * st;
+                    let im = s.imag * ct - s.real * st; // quadrature error after rotation
+                    let ideal = if re > 0.0 { amp } else { -amp };
+                    err2 += (re - ideal) * (re - ideal) + im * im;
+                }
+            }
+        }
+
+        let quality = if amp > 0.0 && count > 0 {
+            let evm = ((err2 / count as f64).sqrt() / amp).min(1.0);
+            SignalQuality {
+                // EVM^2 ~ 1/SNR for a 2-D constellation, so SNR(dB) = -20log10(EVM).
+                snr_db: if evm > 0.0 { -20.0 * evm.log10() } else { 99.0 },
+                evm_percent: evm * 100.0,
+                phase_error_deg: theta.to_degrees(),
+                ..Default::default()
+            }
+        } else {
+            SignalQuality::default()
+        };
+
+        (bits, quality)
     }
 }
 
 impl Demodulator for BpskDemodulator {
     fn demodulate(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
-        let bits = self.recover_bits(samples);
+        let (bits, quality) = self.recover_bits(samples);
+        self.signal_quality = quality;
         self.is_sync = !bits.is_empty();
 
         // Pack bits into bytes, MSB first.
@@ -243,7 +283,9 @@ impl Demodulator for BpskDemodulator {
 impl crate::common::BitDemodulator for BpskDemodulator {
     fn demodulate_bits(&mut self, samples: &[Complex], output: &mut Vec<u8>) -> Result<()> {
         output.clear();
-        *output = self.recover_bits(samples);
+        let (bits, quality) = self.recover_bits(samples);
+        self.signal_quality = quality;
+        *output = bits;
         Ok(())
     }
 }
